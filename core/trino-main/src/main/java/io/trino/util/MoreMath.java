@@ -34,14 +34,12 @@ public final class MoreMath
         if (a == b) { // shortcut, handles infinities
             return true;
         }
-        else if (a == 0 || b == 0 || diff < Double.MIN_NORMAL) {
+        if (a == 0 || b == 0 || diff < Double.MIN_NORMAL) {
             // a or b is zero or both are extremely close to it
             // relative error is less meaningful here
             return diff < (epsilon * Double.MIN_NORMAL);
-        }
-        else { // use relative error
-            return diff / Math.min((absA + absB), Double.MAX_VALUE) < epsilon;
-        }
+        } // use relative error
+        return diff / Math.min(absA + absB, Double.MAX_VALUE) < epsilon;
     }
 
     /**
@@ -56,14 +54,12 @@ public final class MoreMath
         if (a == b) { // shortcut, handles infinities
             return true;
         }
-        else if (a == 0 || b == 0 || diff < Float.MIN_NORMAL) {
+        if (a == 0 || b == 0 || diff < Float.MIN_NORMAL) {
             // a or b is zero or both are extremely close to it
             // relative error is less meaningful here
             return diff < (epsilon * Float.MIN_NORMAL);
-        }
-        else { // use relative error
-            return diff / Math.min((absA + absB), Float.MAX_VALUE) < epsilon;
-        }
+        } // use relative error
+        return diff / Math.min(absA + absB, Float.MAX_VALUE) < epsilon;
     }
 
     public static double min(double... values)
@@ -143,5 +139,10 @@ public final class MoreMath
             return v1;
         }
         return max(v1, v2);
+    }
+
+    public static int previousPowerOfTwo(int x)
+    {
+        return Math.max(1, 1 << 31 - Integer.numberOfLeadingZeros(x));
     }
 }

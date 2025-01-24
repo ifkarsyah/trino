@@ -13,12 +13,12 @@
  */
 package io.trino.testing;
 
-import io.trino.metadata.BoundSignature;
-import io.trino.metadata.FunctionMetadata;
-import io.trino.metadata.Signature;
 import io.trino.metadata.SqlScalarFunction;
-import io.trino.operator.scalar.ChoicesScalarFunctionImplementation;
-import io.trino.operator.scalar.ScalarFunctionImplementation;
+import io.trino.operator.scalar.ChoicesSpecializedSqlScalarFunction;
+import io.trino.operator.scalar.SpecializedSqlScalarFunction;
+import io.trino.spi.function.BoundSignature;
+import io.trino.spi.function.FunctionMetadata;
+import io.trino.spi.function.Signature;
 
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
@@ -40,9 +40,8 @@ public class StatefulSleepingSum
 
     private StatefulSleepingSum()
     {
-        super(FunctionMetadata.scalarBuilder()
+        super(FunctionMetadata.scalarBuilder("stateful_sleeping_sum")
                 .signature(Signature.builder()
-                        .name("stateful_sleeping_sum")
                         .typeVariable("bigint")
                         .returnType(BIGINT)
                         .argumentType(DOUBLE)
@@ -56,10 +55,10 @@ public class StatefulSleepingSum
     }
 
     @Override
-    protected ScalarFunctionImplementation specialize(BoundSignature boundSignature)
+    protected SpecializedSqlScalarFunction specialize(BoundSignature boundSignature)
     {
         int args = 4;
-        return new ChoicesScalarFunctionImplementation(
+        return new ChoicesSpecializedSqlScalarFunction(
                 boundSignature,
                 FAIL_ON_NULL,
                 nCopies(args, NEVER_NULL),

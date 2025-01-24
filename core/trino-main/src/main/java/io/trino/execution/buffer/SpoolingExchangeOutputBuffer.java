@@ -13,28 +13,26 @@
  */
 package io.trino.execution.buffer;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.errorprone.annotations.ThreadSafe;
 import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
 import io.airlift.units.DataSize;
 import io.trino.execution.StateMachine;
 import io.trino.memory.context.LocalMemoryContext;
 import io.trino.spi.exchange.ExchangeSink;
-
-import javax.annotation.concurrent.ThreadSafe;
+import io.trino.spi.metrics.Metrics;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
-import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.util.concurrent.Futures.immediateVoidFuture;
 import static io.airlift.concurrent.MoreFutures.toListenableFuture;
-import static io.trino.execution.buffer.OutputBuffers.BufferType.SPOOL;
-import static io.trino.execution.buffer.PagesSerde.getSerializedPagePositionCount;
+import static io.trino.execution.buffer.PagesSerdeUtil.getSerializedPagePositionCount;
+import static io.trino.execution.buffer.PagesSerdeUtil.getSerializedPageUncompressedSizeInBytes;
 import static java.util.Objects.requireNonNull;
 
 @ThreadSafe
@@ -44,32 +42,34 @@ public class SpoolingExchangeOutputBuffer
     private static final Logger log = Logger.get(SpoolingExchangeOutputBuffer.class);
 
     private final OutputBufferStateMachine stateMachine;
-    private final OutputBuffers outputBuffers;
+    private volatile SpoolingOutputBuffers outputBuffers;
     // This field is not final to allow releasing the memory retained by the ExchangeSink instance.
     // It is modified (assigned to null) when the OutputBuffer is destroyed (either finished or aborted).
-    // It doesn't have to be declared as volatile as the nullification of this variable doesn't have to be immediately visible to other threads.
-    // However since the abort can be triggered at any moment of time this variable has to be accessed in a safe way (avoiding "check-then-use").
-    private ExchangeSink exchangeSink;
+    private volatile ExchangeSink exchangeSink;
+    private Optional<Metrics> finalSinkMetrics;
     private final Supplier<LocalMemoryContext> memoryContextSupplier;
 
     private final AtomicLong peakMemoryUsage = new AtomicLong();
     private final AtomicLong totalPagesAdded = new AtomicLong();
     private final AtomicLong totalRowsAdded = new AtomicLong();
 
+    private final SpoolingOutputStats outputStats;
+
     public SpoolingExchangeOutputBuffer(
             OutputBufferStateMachine stateMachine,
-            OutputBuffers outputBuffers,
+            SpoolingOutputBuffers outputBuffers,
             ExchangeSink exchangeSink,
             Supplier<LocalMemoryContext> memoryContextSupplier)
     {
         this.stateMachine = requireNonNull(stateMachine, "stateMachine is null");
         this.outputBuffers = requireNonNull(outputBuffers, "outputBuffers is null");
-        checkArgument(outputBuffers.getType() == SPOOL, "Expected a SPOOL output buffer");
         // this assignment is expected to be followed by an assignment of a final field to ensure safe publication
         this.exchangeSink = requireNonNull(exchangeSink, "exchangeSink is null");
         this.memoryContextSupplier = requireNonNull(memoryContextSupplier, "memoryContextSupplier is null");
 
         stateMachine.noMoreBuffers();
+
+        outputStats = new SpoolingOutputStats(outputBuffers.getOutputPartitionCount());
     }
 
     @Override
@@ -86,7 +86,10 @@ public class SpoolingExchangeOutputBuffer
                 totalPagesAdded.get(),
                 totalRowsAdded.get(),
                 totalPagesAdded.get(),
-                ImmutableList.of());
+                Optional.empty(),
+                Optional.empty(),
+                outputStats.getFinalSnapshot(),
+                getMetrics());
     }
 
     @Override
@@ -102,9 +105,15 @@ public class SpoolingExchangeOutputBuffer
     }
 
     @Override
-    public boolean isOverutilized()
+    public OutputBufferStatus getStatus()
     {
-        return false;
+        // do not grab lock to acquire outputBuffers to avoid delaying TaskStatus response
+        OutputBufferStatus.Builder result = OutputBufferStatus.builder(outputBuffers.getVersion());
+        ExchangeSink sink = exchangeSink;
+        if (sink != null) {
+            result.setExchangeSinkInstanceHandleUpdateRequired(sink.isHandleUpdateRequired());
+        }
+        return result.build();
     }
 
     @Override
@@ -114,7 +123,7 @@ public class SpoolingExchangeOutputBuffer
     }
 
     @Override
-    public void setOutputBuffers(OutputBuffers newOutputBuffers)
+    public synchronized void setOutputBuffers(OutputBuffers newOutputBuffers)
     {
         requireNonNull(newOutputBuffers, "newOutputBuffers is null");
 
@@ -126,22 +135,30 @@ public class SpoolingExchangeOutputBuffer
 
         // no more buffers can be added but verify this is valid state change
         outputBuffers.checkValidTransition(newOutputBuffers);
+
+        ExchangeSink sink = exchangeSink;
+        if (sink != null) {
+            sink.updateHandle(((SpoolingOutputBuffers) newOutputBuffers).getExchangeSinkInstanceHandle());
+        }
+
+        // assign output buffers only after updating the sink to avoid triggering an extra update
+        outputBuffers = (SpoolingOutputBuffers) newOutputBuffers;
     }
 
     @Override
-    public ListenableFuture<BufferResult> get(OutputBuffers.OutputBufferId bufferId, long token, DataSize maxSize)
+    public ListenableFuture<BufferResult> get(PipelinedOutputBuffers.OutputBufferId bufferId, long token, DataSize maxSize)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void acknowledge(OutputBuffers.OutputBufferId bufferId, long token)
+    public void acknowledge(PipelinedOutputBuffers.OutputBufferId bufferId, long token)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void destroy(OutputBuffers.OutputBufferId bufferId)
+    public void destroy(PipelinedOutputBuffers.OutputBufferId bufferId)
     {
         throw new UnsupportedOperationException();
     }
@@ -175,12 +192,18 @@ public class SpoolingExchangeOutputBuffer
 
         ExchangeSink sink = exchangeSink;
         checkState(sink != null, "exchangeSink is null");
+        long dataSizeInBytes = 0;
+        long addedPositions = 0;
         for (Slice page : pages) {
+            dataSizeInBytes += getSerializedPageUncompressedSizeInBytes(page);
+            addedPositions += getSerializedPagePositionCount(page);
             sink.add(partition, page);
-            totalRowsAdded.addAndGet(getSerializedPagePositionCount(page));
         }
-        updateMemoryUsage(sink.getMemoryUsage());
         totalPagesAdded.addAndGet(pages.size());
+        totalRowsAdded.addAndGet(addedPositions);
+        outputStats.updateRowCount(addedPositions);
+        outputStats.updatePartitionDataSize(partition, dataSizeInBytes);
+        updateMemoryUsage(sink.getMemoryUsage());
     }
 
     @Override
@@ -189,6 +212,8 @@ public class SpoolingExchangeOutputBuffer
         if (!stateMachine.noMorePages()) {
             return;
         }
+
+        outputStats.finish();
 
         ExchangeSink sink = exchangeSink;
         if (sink == null) {
@@ -202,8 +227,10 @@ public class SpoolingExchangeOutputBuffer
             else {
                 stateMachine.finish();
             }
+            finalSinkMetrics = sink.getMetrics();
             exchangeSink = null;
-            updateMemoryUsage(0);
+
+            forceFreeMemory();
         });
     }
 
@@ -233,8 +260,9 @@ public class SpoolingExchangeOutputBuffer
             if (failure != null) {
                 log.warn(failure, "Error aborting exchange sink");
             }
+            finalSinkMetrics = sink.getMetrics();
             exchangeSink = null;
-            updateMemoryUsage(0);
+            forceFreeMemory();
         });
     }
 
@@ -272,15 +300,32 @@ public class SpoolingExchangeOutputBuffer
         }
     }
 
+    private void forceFreeMemory()
+    {
+        LocalMemoryContext context = getSystemMemoryContextOrNull();
+        if (context != null) {
+            context.close();
+        }
+    }
+
     private LocalMemoryContext getSystemMemoryContextOrNull()
     {
         try {
             return memoryContextSupplier.get();
         }
-        catch (RuntimeException ignored) {
+        catch (RuntimeException _) {
             // This is possible with races, e.g., a task is created and then immediately aborted,
             // so that the task context hasn't been created yet (as a result there's no memory context available).
             return null;
         }
+    }
+
+    private Optional<Metrics> getMetrics()
+    {
+        ExchangeSink sink = exchangeSink;
+        if (sink == null) {
+            return finalSinkMetrics;
+        }
+        return sink.getMetrics();
     }
 }

@@ -18,11 +18,11 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.io.Closer;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.errorprone.annotations.ThreadSafe;
 import io.airlift.log.Logger;
 import io.trino.memory.context.LocalMemoryContext;
 import io.trino.operator.DriverContext;
 import io.trino.operator.HashArraySizeSupplier;
-import io.trino.operator.HashCollisionsCounter;
 import io.trino.operator.Operator;
 import io.trino.operator.OperatorContext;
 import io.trino.operator.OperatorFactory;
@@ -32,9 +32,7 @@ import io.trino.spiller.SingleStreamSpiller;
 import io.trino.spiller.SingleStreamSpillerFactory;
 import io.trino.sql.gen.JoinFilterFunctionCompiler.JoinFilterFunctionFactory;
 import io.trino.sql.planner.plan.PlanNodeId;
-
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.ThreadSafe;
+import jakarta.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -221,8 +219,6 @@ public class HashBuilderOperator
     private final boolean spillEnabled;
     private final SingleStreamSpillerFactory singleStreamSpillerFactory;
 
-    private final HashCollisionsCounter hashCollisionsCounter;
-
     private State state = State.CONSUMING_INPUT;
     private Optional<ListenableFuture<Void>> lookupSourceNotNeeded = Optional.empty();
     private final SpilledLookupSourceHandle spilledLookupSourceHandle = new SpilledLookupSourceHandle();
@@ -269,9 +265,6 @@ public class HashBuilderOperator
         this.hashChannels = hashChannels;
         this.preComputedHashChannel = preComputedHashChannel;
 
-        this.hashCollisionsCounter = new HashCollisionsCounter(operatorContext);
-        operatorContext.setInfoSupplier(hashCollisionsCounter);
-
         this.spillEnabled = spillEnabled;
         this.singleStreamSpillerFactory = requireNonNull(singleStreamSpillerFactory, "singleStreamSpillerFactory is null");
         this.hashArraySizeSupplier = requireNonNull(hashArraySizeSupplier, "hashArraySizeSupplier is null");
@@ -292,30 +285,15 @@ public class HashBuilderOperator
     @Override
     public ListenableFuture<Void> isBlocked()
     {
-        switch (state) {
-            case CONSUMING_INPUT:
-                return NOT_BLOCKED;
-
-            case SPILLING_INPUT:
-                return spillInProgress;
-
-            case LOOKUP_SOURCE_BUILT:
-                return lookupSourceNotNeeded.orElseThrow(() -> new IllegalStateException("Lookup source built, but disposal future not set"));
-
-            case INPUT_SPILLED:
-                return spilledLookupSourceHandle.getUnspillingOrDisposeRequested();
-
-            case INPUT_UNSPILLING:
-                return unspillInProgress.map(HashBuilderOperator::asVoid)
-                        .orElseThrow(() -> new IllegalStateException("Unspilling in progress, but unspilling future not set"));
-
-            case INPUT_UNSPILLED_AND_BUILT:
-                return spilledLookupSourceHandle.getDisposeRequested();
-
-            case CLOSED:
-                return NOT_BLOCKED;
-        }
-        throw new IllegalStateException("Unhandled state: " + state);
+        return switch (state) {
+            case CONSUMING_INPUT -> NOT_BLOCKED;
+            case SPILLING_INPUT -> spillInProgress;
+            case LOOKUP_SOURCE_BUILT -> lookupSourceNotNeeded.orElseThrow(() -> new IllegalStateException("Lookup source built, but disposal future not set"));
+            case INPUT_SPILLED -> spilledLookupSourceHandle.getUnspillingOrDisposeRequested();
+            case INPUT_UNSPILLING -> unspillInProgress.map(HashBuilderOperator::asVoid).orElseThrow(() -> new IllegalStateException("Unspilling in progress, but unspilling future not set"));
+            case INPUT_UNSPILLED_AND_BUILT -> spilledLookupSourceHandle.getDisposeRequested();
+            case CLOSED -> NOT_BLOCKED;
+        };
     }
 
     private static <T> ListenableFuture<Void> asVoid(ListenableFuture<T> future)
@@ -616,7 +594,6 @@ public class HashBuilderOperator
     private LookupSourceSupplier buildLookupSource()
     {
         LookupSourceSupplier partition = index.createLookupSourceSupplier(operatorContext.getSession(), hashChannels, preComputedHashChannel, filterFunctionFactory, sortChannel, searchFunctionFactories, Optional.of(outputChannels), hashArraySizeSupplier);
-        hashCollisionsCounter.recordHashCollision(partition.getHashCollisions(), partition.getExpectedHashCollisions());
         checkState(lookupSourceSupplier == null, "lookupSourceSupplier is already set");
         this.lookupSourceSupplier = partition;
         return partition;

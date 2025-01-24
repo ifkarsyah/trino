@@ -28,7 +28,7 @@ import io.trino.testing.MaterializedResult;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.type.TypeDeserializer;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
@@ -37,7 +37,6 @@ import static io.trino.spi.type.VarcharType.createVarcharType;
 import static io.trino.sql.planner.planprinter.IoPlanPrinter.FormattedMarker.Bound.EXACTLY;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.testng.Assert.assertEquals;
 
 public class TestTpchConnectorTest
         extends BaseConnectorTest
@@ -46,47 +45,33 @@ public class TestTpchConnectorTest
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return TpchQueryRunnerBuilder.builder().build();
+        return TpchQueryRunner.builder().build();
     }
 
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_TOPN_PUSHDOWN:
-                return false;
-
-            case SUPPORTS_CREATE_SCHEMA:
-                return false;
-
-            case SUPPORTS_CREATE_TABLE:
-                return false;
-
-            case SUPPORTS_ADD_COLUMN:
-                return false;
-
-            case SUPPORTS_RENAME_TABLE:
-                return false;
-
-            case SUPPORTS_COMMENT_ON_TABLE:
-            case SUPPORTS_COMMENT_ON_COLUMN:
-                return false;
-
-            case SUPPORTS_INSERT:
-                return false;
-
-            case SUPPORTS_DELETE:
-                return false;
-
-            case SUPPORTS_ARRAY:
-                return false;
-
-            case SUPPORTS_ROW_TYPE:
-                return false;
-
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+        return switch (connectorBehavior) {
+            case SUPPORTS_ADD_COLUMN,
+                 SUPPORTS_ARRAY,
+                 SUPPORTS_COMMENT_ON_COLUMN,
+                 SUPPORTS_COMMENT_ON_TABLE,
+                 SUPPORTS_CREATE_MATERIALIZED_VIEW,
+                 SUPPORTS_CREATE_SCHEMA,
+                 SUPPORTS_CREATE_TABLE,
+                 SUPPORTS_CREATE_VIEW,
+                 SUPPORTS_DELETE,
+                 SUPPORTS_INSERT,
+                 SUPPORTS_MAP_TYPE,
+                 SUPPORTS_MERGE,
+                 SUPPORTS_RENAME_COLUMN,
+                 SUPPORTS_RENAME_TABLE,
+                 SUPPORTS_ROW_TYPE,
+                 SUPPORTS_SET_COLUMN_TYPE,
+                 SUPPORTS_TOPN_PUSHDOWN,
+                 SUPPORTS_UPDATE -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
     }
 
     @Test
@@ -96,33 +81,34 @@ public class TestTpchConnectorTest
         MaterializedResult result = computeActual("EXPLAIN (TYPE IO, FORMAT JSON) " + query);
         EstimatedStatsAndCost scanEstimate = new EstimatedStatsAndCost(15000.0, 1597294.0, 1597294.0, 0.0, 0.0);
         EstimatedStatsAndCost totalEstimate = new EstimatedStatsAndCost(15000.0, 1597294.0, 1597294.0, 0.0, 1597294.0);
+
         IoPlanPrinter.IoPlan.TableColumnInfo input = new IoPlanPrinter.IoPlan.TableColumnInfo(
                 new CatalogSchemaTableName("tpch", "tiny", "orders"),
-                ImmutableSet.of(
-                        new IoPlanPrinter.ColumnConstraint(
-                                "orderstatus",
-                                createVarcharType(1),
-                                new IoPlanPrinter.FormattedDomain(
-                                        false,
-                                        ImmutableSet.of(
-                                                new IoPlanPrinter.FormattedRange(
-                                                        new IoPlanPrinter.FormattedMarker(Optional.of("F"), EXACTLY),
-                                                        new IoPlanPrinter.FormattedMarker(Optional.of("F"), EXACTLY)),
-                                                new IoPlanPrinter.FormattedRange(
-                                                        new IoPlanPrinter.FormattedMarker(Optional.of("O"), EXACTLY),
-                                                        new IoPlanPrinter.FormattedMarker(Optional.of("O"), EXACTLY)),
-                                                new IoPlanPrinter.FormattedRange(
-                                                        new IoPlanPrinter.FormattedMarker(Optional.of("P"), EXACTLY),
-                                                        new IoPlanPrinter.FormattedMarker(Optional.of("P"), EXACTLY)))))),
+                new IoPlanPrinter.Constraint(
+                        false,
+                        ImmutableSet.of(
+                                new IoPlanPrinter.ColumnConstraint(
+                                        "orderstatus",
+                                        createVarcharType(1),
+                                        new IoPlanPrinter.FormattedDomain(
+                                                false,
+                                                ImmutableSet.of(
+                                                        new IoPlanPrinter.FormattedRange(
+                                                                new IoPlanPrinter.FormattedMarker(Optional.of("F"), EXACTLY),
+                                                                new IoPlanPrinter.FormattedMarker(Optional.of("F"), EXACTLY)),
+                                                        new IoPlanPrinter.FormattedRange(
+                                                                new IoPlanPrinter.FormattedMarker(Optional.of("O"), EXACTLY),
+                                                                new IoPlanPrinter.FormattedMarker(Optional.of("O"), EXACTLY)),
+                                                        new IoPlanPrinter.FormattedRange(
+                                                                new IoPlanPrinter.FormattedMarker(Optional.of("P"), EXACTLY),
+                                                                new IoPlanPrinter.FormattedMarker(Optional.of("P"), EXACTLY))))))),
                 scanEstimate);
 
         ObjectMapperProvider objectMapperProvider = new ObjectMapperProvider();
-        objectMapperProvider.setJsonDeserializers(ImmutableMap.of(Type.class, new TypeDeserializer(getQueryRunner().getTypeManager())));
+        objectMapperProvider.setJsonDeserializers(ImmutableMap.of(Type.class, new TypeDeserializer(getQueryRunner().getPlannerContext().getTypeManager())));
         JsonCodec<IoPlanPrinter.IoPlan> codec = new JsonCodecFactory(objectMapperProvider).jsonCodec(IoPlanPrinter.IoPlan.class);
 
-        assertEquals(
-                codec.fromJson((String) getOnlyElement(result.getOnlyColumnAsSet())),
-                new IoPlanPrinter.IoPlan(ImmutableSet.of(input), Optional.empty(), totalEstimate));
+        assertThat(codec.fromJson((String) getOnlyElement(result.getOnlyColumnAsSet()))).isEqualTo(new IoPlanPrinter.IoPlan(ImmutableSet.of(input), Optional.empty(), totalEstimate));
     }
 
     @Test
@@ -135,7 +121,7 @@ public class TestTpchConnectorTest
     public void testAnalyze()
     {
         assertUpdate("ANALYZE orders", 15000);
-        assertQueryFails("ANALYZE orders WITH (foo = 'bar')", ".* analyze property 'foo' does not exist");
+        assertQueryFails("ANALYZE orders WITH (foo = 'bar')", "line 1:22: Catalog 'tpch' analyze property 'foo' does not exist");
     }
 
     @Test
@@ -174,6 +160,7 @@ public class TestTpchConnectorTest
         assertQueryFails("SHOW TABLES FROM sf0", "line 1:1: Schema 'sf0' does not exist");
     }
 
+    @Test
     @Override
     public void testShowCreateTable()
     {
@@ -191,6 +178,7 @@ public class TestTpchConnectorTest
                         ")");
     }
 
+    @Test
     @Override
     public void testPredicateReflectedInExplain()
     {

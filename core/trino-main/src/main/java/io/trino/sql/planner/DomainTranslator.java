@@ -16,22 +16,16 @@ package io.trino.sql.planner;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.PeekingIterator;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.trino.Session;
-import io.trino.connector.CatalogServiceProvider;
-import io.trino.metadata.AnalyzePropertyManager;
+import io.trino.metadata.Metadata;
 import io.trino.metadata.OperatorNotFoundException;
 import io.trino.metadata.ResolvedFunction;
-import io.trino.metadata.SessionPropertyManager;
-import io.trino.metadata.TableFunctionRegistry;
-import io.trino.metadata.TableProceduresPropertyManager;
-import io.trino.metadata.TableProceduresRegistry;
-import io.trino.metadata.TablePropertyManager;
-import io.trino.security.AllowAllAccessControl;
+import io.trino.spi.ErrorCode;
 import io.trino.spi.TrinoException;
+import io.trino.spi.function.CatalogSchemaFunctionName;
 import io.trino.spi.predicate.DiscreteValues;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.NullableValue;
@@ -46,34 +40,27 @@ import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
 import io.trino.sql.InterpretedFunctionInvoker;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.analyzer.StatementAnalyzerFactory;
-import io.trino.sql.parser.SqlParser;
-import io.trino.sql.tree.AstVisitor;
-import io.trino.sql.tree.BetweenPredicate;
-import io.trino.sql.tree.BooleanLiteral;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.FunctionCall;
-import io.trino.sql.tree.InListExpression;
-import io.trino.sql.tree.InPredicate;
-import io.trino.sql.tree.IsNotNullPredicate;
-import io.trino.sql.tree.IsNullPredicate;
-import io.trino.sql.tree.LikePredicate;
-import io.trino.sql.tree.LogicalExpression;
-import io.trino.sql.tree.NodeRef;
-import io.trino.sql.tree.NotExpression;
-import io.trino.sql.tree.NullLiteral;
-import io.trino.sql.tree.StringLiteral;
-import io.trino.sql.tree.SymbolReference;
-import io.trino.transaction.NoOpTransactionManager;
+import io.trino.sql.ir.Between;
+import io.trino.sql.ir.Call;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.In;
+import io.trino.sql.ir.IrUtils;
+import io.trino.sql.ir.IrVisitor;
+import io.trino.sql.ir.IsNull;
+import io.trino.sql.ir.Logical;
+import io.trino.sql.ir.Reference;
 import io.trino.type.LikeFunctions;
+import io.trino.type.LikePattern;
 import io.trino.type.TypeCoercion;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.lang.invoke.MethodHandle;
+import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -81,6 +68,7 @@ import java.util.Set;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.collect.Iterators.peekingIterator;
@@ -88,126 +76,136 @@ import static io.airlift.slice.SliceUtf8.countCodePoints;
 import static io.airlift.slice.SliceUtf8.getCodePointAt;
 import static io.airlift.slice.SliceUtf8.lengthOfCodePoint;
 import static io.airlift.slice.SliceUtf8.setCodePointAt;
+import static io.airlift.slice.Slices.utf8Slice;
+import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
+import static io.trino.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.NEVER_NULL;
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.FAIL_ON_NULL;
 import static io.trino.spi.function.InvocationConvention.simpleConvention;
 import static io.trino.spi.function.OperatorType.SATURATED_FLOOR_CAST;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
+import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.TypeUtils.isFloatingPointNaN;
-import static io.trino.sql.ExpressionUtils.and;
-import static io.trino.sql.ExpressionUtils.combineConjuncts;
-import static io.trino.sql.ExpressionUtils.combineDisjunctsWithDefault;
-import static io.trino.sql.ExpressionUtils.or;
-import static io.trino.sql.tree.BooleanLiteral.FALSE_LITERAL;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.EQUAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.LESS_THAN;
-import static io.trino.sql.tree.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.NOT_EQUAL;
+import static io.trino.sql.ir.Booleans.FALSE;
+import static io.trino.sql.ir.Booleans.TRUE;
+import static io.trino.sql.ir.Comparison.Operator.EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN_OR_EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.IDENTICAL;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.NOT_EQUAL;
+import static io.trino.sql.ir.IrExpressions.not;
+import static io.trino.sql.ir.IrUtils.and;
+import static io.trino.sql.ir.IrUtils.combineConjuncts;
+import static io.trino.sql.ir.IrUtils.combineDisjunctsWithDefault;
+import static io.trino.sql.ir.IrUtils.or;
+import static io.trino.type.LikeFunctions.LIKE_FUNCTION_NAME;
 import static java.util.Objects.requireNonNull;
-import static java.util.stream.Collectors.collectingAndThen;
 import static java.util.stream.Collectors.toList;
 
 public final class DomainTranslator
 {
-    private final PlannerContext plannerContext;
-    private final LiteralEncoder literalEncoder;
+    private final Metadata metadata;
 
-    public DomainTranslator(PlannerContext plannerContext)
+    public DomainTranslator(Metadata metadata)
     {
-        this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
-        this.literalEncoder = new LiteralEncoder(plannerContext);
+        this.metadata = metadata;
     }
 
-    public Expression toPredicate(Session session, TupleDomain<Symbol> tupleDomain)
+    public Expression toPredicate(TupleDomain<Symbol> tupleDomain)
+    {
+        return IrUtils.combineConjuncts(toPredicateConjuncts(tupleDomain));
+    }
+
+    public List<Expression> toPredicateConjuncts(TupleDomain<Symbol> tupleDomain)
     {
         if (tupleDomain.isNone()) {
-            return FALSE_LITERAL;
+            return ImmutableList.of(FALSE);
         }
 
         Map<Symbol, Domain> domains = tupleDomain.getDomains().get();
         return domains.entrySet().stream()
-                .map(entry -> toPredicate(session, entry.getValue(), entry.getKey().toSymbolReference()))
-                .collect(collectingAndThen(toImmutableList(), expressions -> combineConjuncts(plannerContext.getMetadata(), expressions)));
+                .sorted(Comparator.comparing(e -> e.getKey().name()))
+                .map(entry -> toPredicate(entry.getValue(), entry.getKey().toSymbolReference()))
+                .collect(toImmutableList());
     }
 
-    private Expression toPredicate(Session session, Domain domain, SymbolReference reference)
+    private Expression toPredicate(Domain domain, Reference reference)
     {
         if (domain.getValues().isNone()) {
-            return domain.isNullAllowed() ? new IsNullPredicate(reference) : FALSE_LITERAL;
+            return domain.isNullAllowed() ? new IsNull(reference) : FALSE;
         }
 
         if (domain.getValues().isAll()) {
-            return domain.isNullAllowed() ? TRUE_LITERAL : new NotExpression(new IsNullPredicate(reference));
+            return domain.isNullAllowed() ? TRUE : not(metadata, new IsNull(reference));
         }
 
         List<Expression> disjuncts = new ArrayList<>();
 
+        // Add nullability disjuncts
+        if (domain.isNullAllowed()) {
+            disjuncts.add(new IsNull(reference));
+        }
+
         disjuncts.addAll(domain.getValues().getValuesProcessor().transform(
-                ranges -> extractDisjuncts(session, domain.getType(), ranges, reference),
-                discreteValues -> extractDisjuncts(session, domain.getType(), discreteValues, reference),
+                ranges -> extractDisjuncts(domain.getType(), ranges, reference),
+                discreteValues -> extractDisjuncts(domain.getType(), discreteValues, reference),
                 allOrNone -> {
                     throw new IllegalStateException("Case should not be reachable");
                 }));
 
-        // Add nullability disjuncts
-        if (domain.isNullAllowed()) {
-            disjuncts.add(new IsNullPredicate(reference));
-        }
-
-        return combineDisjunctsWithDefault(plannerContext.getMetadata(), disjuncts, TRUE_LITERAL);
+        return combineDisjunctsWithDefault(disjuncts, TRUE);
     }
 
-    private Expression processRange(Session session, Type type, Range range, SymbolReference reference)
+    private static Expression processRange(Type type, Range range, Reference reference)
     {
         if (range.isAll()) {
-            return TRUE_LITERAL;
+            return TRUE;
         }
 
         if (isBetween(range)) {
             // specialize the range with BETWEEN expression if possible b/c it is currently more efficient
-            return new BetweenPredicate(
+            return new Between(
                     reference,
-                    literalEncoder.toExpression(session, range.getLowBoundedValue(), type),
-                    literalEncoder.toExpression(session, range.getHighBoundedValue(), type));
+                    new Constant(type, range.getLowBoundedValue()),
+                    new Constant(type, range.getHighBoundedValue()));
         }
 
         List<Expression> rangeConjuncts = new ArrayList<>();
         if (!range.isLowUnbounded()) {
-            rangeConjuncts.add(new ComparisonExpression(
+            rangeConjuncts.add(new Comparison(
                     range.isLowInclusive() ? GREATER_THAN_OR_EQUAL : GREATER_THAN,
                     reference,
-                    literalEncoder.toExpression(session, range.getLowBoundedValue(), type)));
+                    new Constant(type, range.getLowBoundedValue())));
         }
         if (!range.isHighUnbounded()) {
-            rangeConjuncts.add(new ComparisonExpression(
+            rangeConjuncts.add(new Comparison(
                     range.isHighInclusive() ? LESS_THAN_OR_EQUAL : LESS_THAN,
                     reference,
-                    literalEncoder.toExpression(session, range.getHighBoundedValue(), type)));
+                    new Constant(type, range.getHighBoundedValue())));
         }
         // If rangeConjuncts is null, then the range was ALL, which should already have been checked for
         checkState(!rangeConjuncts.isEmpty());
-        return combineConjuncts(plannerContext.getMetadata(), rangeConjuncts);
+        return combineConjuncts(rangeConjuncts);
     }
 
-    private Expression combineRangeWithExcludedPoints(Session session, Type type, SymbolReference reference, Range range, List<Expression> excludedPoints)
+    private Expression combineRangeWithExcludedPoints(Type type, Reference reference, Range range, List<Expression> excludedPoints)
     {
         if (excludedPoints.isEmpty()) {
-            return processRange(session, type, range, reference);
+            return processRange(type, range, reference);
         }
 
-        Expression excludedPointsExpression = new NotExpression(new InPredicate(reference, new InListExpression(excludedPoints)));
+        Expression excludedPointsExpression = not(metadata, new In(reference, excludedPoints));
         if (excludedPoints.size() == 1) {
-            excludedPointsExpression = new ComparisonExpression(NOT_EQUAL, reference, getOnlyElement(excludedPoints));
+            excludedPointsExpression = new Comparison(NOT_EQUAL, reference, getOnlyElement(excludedPoints));
         }
 
-        return combineConjuncts(plannerContext.getMetadata(), processRange(session, type, range, reference), excludedPointsExpression);
+        return combineConjuncts(processRange(type, range, reference), excludedPointsExpression);
     }
 
-    private List<Expression> extractDisjuncts(Session session, Type type, Ranges ranges, SymbolReference reference)
+    private List<Expression> extractDisjuncts(Type type, Ranges ranges, Reference reference)
     {
         List<Expression> disjuncts = new ArrayList<>();
         List<Expression> singleValues = new ArrayList<>();
@@ -233,7 +231,7 @@ public final class DomainTranslator
             boolean coalescedRangeIsAll = originalUnionSingleValues.stream().anyMatch(Range::isAll);
             if (!originalRangeIsAll && coalescedRangeIsAll) {
                 for (Range range : orderedRanges) {
-                    disjuncts.add(processRange(session, type, range, reference));
+                    disjuncts.add(processRange(type, range, reference));
                 }
                 return disjuncts;
             }
@@ -241,38 +239,38 @@ public final class DomainTranslator
 
         for (Range range : originalUnionSingleValues) {
             if (range.isSingleValue()) {
-                singleValues.add(literalEncoder.toExpression(session, range.getSingleValue(), type));
+                singleValues.add(new Constant(type, range.getSingleValue()));
                 continue;
             }
 
             // attempt to optimize ranges that can be coalesced as long as single value points are excluded
             List<Expression> singleValuesInRange = new ArrayList<>();
             while (singleValueExclusions.hasNext() && range.contains(singleValueExclusions.peek())) {
-                singleValuesInRange.add(literalEncoder.toExpression(session, singleValueExclusions.next().getSingleValue(), type));
+                singleValuesInRange.add(new Constant(type, singleValueExclusions.next().getSingleValue()));
             }
 
             if (!singleValuesInRange.isEmpty()) {
-                disjuncts.add(combineRangeWithExcludedPoints(session, type, reference, range, singleValuesInRange));
+                disjuncts.add(combineRangeWithExcludedPoints(type, reference, range, singleValuesInRange));
                 continue;
             }
 
-            disjuncts.add(processRange(session, type, range, reference));
+            disjuncts.add(processRange(type, range, reference));
         }
 
         // Add back all of the possible single values either as an equality or an IN predicate
         if (singleValues.size() == 1) {
-            disjuncts.add(new ComparisonExpression(EQUAL, reference, getOnlyElement(singleValues)));
+            disjuncts.add(new Comparison(EQUAL, reference, getOnlyElement(singleValues)));
         }
         else if (singleValues.size() > 1) {
-            disjuncts.add(new InPredicate(reference, new InListExpression(singleValues)));
+            disjuncts.add(new In(reference, singleValues));
         }
         return disjuncts;
     }
 
-    private List<Expression> extractDisjuncts(Session session, Type type, DiscreteValues discreteValues, SymbolReference reference)
+    private List<Expression> extractDisjuncts(Type type, DiscreteValues discreteValues, Reference reference)
     {
         List<Expression> values = discreteValues.getValues().stream()
-                .map(object -> literalEncoder.toExpression(session, object, type))
+                .map(object -> new Constant(type, object))
                 .collect(toList());
 
         // If values is empty, then the equatableValues was either ALL or NONE, both of which should already have been checked for
@@ -280,14 +278,14 @@ public final class DomainTranslator
 
         Expression predicate;
         if (values.size() == 1) {
-            predicate = new ComparisonExpression(EQUAL, reference, getOnlyElement(values));
+            predicate = new Comparison(EQUAL, reference, getOnlyElement(values));
         }
         else {
-            predicate = new InPredicate(reference, new InListExpression(values));
+            predicate = new In(reference, values);
         }
 
         if (!discreteValues.isInclusive()) {
-            predicate = new NotExpression(predicate);
+            predicate = not(metadata, predicate);
         }
         return ImmutableList.of(predicate);
     }
@@ -304,53 +302,26 @@ public final class DomainTranslator
      * 2) An Expression fragment which represents the part of the original Expression that will need to be re-evaluated
      * after filtering with the TupleDomain.
      */
-    public static ExtractionResult getExtractionResult(PlannerContext plannerContext, Session session, Expression predicate, TypeProvider types)
+    public static ExtractionResult getExtractionResult(PlannerContext plannerContext, Session session, Expression predicate)
     {
         // This is a limited type analyzer for the simple expressions used in this method
-        TypeAnalyzer typeAnalyzer = new TypeAnalyzer(
-                plannerContext,
-                new StatementAnalyzerFactory(
-                        plannerContext,
-                        new SqlParser(),
-                        new AllowAllAccessControl(),
-                        new NoOpTransactionManager(),
-                        user -> ImmutableSet.of(),
-                        new TableProceduresRegistry(CatalogServiceProvider.fail("procedures are not supported in domain translator")),
-                        new TableFunctionRegistry(CatalogServiceProvider.fail("table functions are not supported in domain translator")),
-                        new SessionPropertyManager(),
-                        new TablePropertyManager(CatalogServiceProvider.fail("table properties not supported in domain translator")),
-                        new AnalyzePropertyManager(CatalogServiceProvider.fail("analyze properties not supported in domain translator")),
-                        new TableProceduresPropertyManager(CatalogServiceProvider.fail("procedures are not supported in domain translator"))));
-        return new Visitor(plannerContext, session, types, typeAnalyzer).process(predicate, false);
+        return new Visitor(plannerContext, session).process(predicate, false);
     }
 
     private static class Visitor
-            extends AstVisitor<ExtractionResult, Boolean>
+            extends IrVisitor<ExtractionResult, Boolean>
     {
         private final PlannerContext plannerContext;
-        private final LiteralEncoder literalEncoder;
         private final Session session;
-        private final TypeProvider types;
         private final InterpretedFunctionInvoker functionInvoker;
-        private final TypeAnalyzer typeAnalyzer;
         private final TypeCoercion typeCoercion;
 
-        private Visitor(PlannerContext plannerContext, Session session, TypeProvider types, TypeAnalyzer typeAnalyzer)
+        private Visitor(PlannerContext plannerContext, Session session)
         {
             this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
-            this.literalEncoder = new LiteralEncoder(plannerContext);
             this.session = requireNonNull(session, "session is null");
-            this.types = requireNonNull(types, "types is null");
             this.functionInvoker = new InterpretedFunctionInvoker(plannerContext.getFunctionManager());
-            this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
             this.typeCoercion = new TypeCoercion(plannerContext.getTypeManager()::getType);
-        }
-
-        private Type checkedTypeLookup(Symbol symbol)
-        {
-            Type type = types.get(symbol);
-            checkArgument(type != null, "Types is missing info for symbol: %s", symbol);
-            return type;
         }
 
         private static ValueSet complementIfNecessary(ValueSet valueSet, boolean complement)
@@ -363,9 +334,9 @@ public final class DomainTranslator
             return complement ? domain.complement() : domain;
         }
 
-        private static Expression complementIfNecessary(Expression expression, boolean complement)
+        private Expression complementIfNecessary(Expression expression, boolean complement)
         {
-            return complement ? new NotExpression(expression) : expression;
+            return complement ? not(plannerContext.getMetadata(), expression) : expression;
         }
 
         @Override
@@ -376,9 +347,9 @@ public final class DomainTranslator
         }
 
         @Override
-        protected ExtractionResult visitLogicalExpression(LogicalExpression node, Boolean complement)
+        protected ExtractionResult visitLogical(Logical node, Boolean complement)
         {
-            List<ExtractionResult> results = node.getTerms().stream()
+            List<ExtractionResult> results = node.terms().stream()
                     .map(term -> process(term, complement))
                     .collect(toImmutableList());
 
@@ -390,12 +361,12 @@ public final class DomainTranslator
                     .map(ExtractionResult::getRemainingExpression)
                     .collect(toImmutableList());
 
-            LogicalExpression.Operator operator = complement ? node.getOperator().flip() : node.getOperator();
+            Logical.Operator operator = complement ? node.operator().flip() : node.operator();
             switch (operator) {
                 case AND:
                     return new ExtractionResult(
                             TupleDomain.intersect(tupleDomains),
-                            combineConjuncts(plannerContext.getMetadata(), residuals));
+                            combineConjuncts(residuals));
 
                 case OR:
                     TupleDomain<Symbol> columnUnionedTupleDomain = TupleDomain.columnWiseUnion(tupleDomains);
@@ -408,7 +379,7 @@ public final class DomainTranslator
                     // some of these cases, we won't have to double check the bounds unnecessarily at execution time.
 
                     // We can only make inferences if the remaining expressions on all terms are equal and deterministic
-                    if (Set.copyOf(residuals).size() == 1 && DeterminismEvaluator.isDeterministic(residuals.get(0), plannerContext.getMetadata())) {
+                    if (Set.copyOf(residuals).size() == 1 && DeterminismEvaluator.isDeterministic(residuals.get(0))) {
                         // NONE are no-op for the purpose of OR
                         tupleDomains = tupleDomains.stream()
                                 .filter(domain -> !domain.isNone())
@@ -462,45 +433,51 @@ public final class DomainTranslator
 
                     return new ExtractionResult(columnUnionedTupleDomain, remainingExpression);
             }
-            throw new AssertionError("Unknown operator: " + node.getOperator());
+            throw new AssertionError("Unknown operator: " + node.operator());
         }
 
         @Override
-        protected ExtractionResult visitNotExpression(NotExpression node, Boolean complement)
+        protected ExtractionResult visitReference(Reference node, Boolean complement)
         {
-            return process(node.getValue(), !complement);
-        }
-
-        @Override
-        protected ExtractionResult visitSymbolReference(SymbolReference node, Boolean complement)
-        {
-            if (types.get(Symbol.from(node)).equals(BOOLEAN)) {
-                ComparisonExpression newNode = new ComparisonExpression(EQUAL, node, TRUE_LITERAL);
-                return visitComparisonExpression(newNode, complement);
+            if (node.type().equals(BOOLEAN)) {
+                Comparison newNode = new Comparison(EQUAL, node, TRUE);
+                return visitComparison(newNode, complement);
             }
 
             return visitExpression(node, complement);
         }
 
         @Override
-        protected ExtractionResult visitComparisonExpression(ComparisonExpression node, Boolean complement)
+        protected ExtractionResult visitComparison(Comparison node, Boolean complement)
         {
             Optional<NormalizedSimpleComparison> optionalNormalized = toNormalizedSimpleComparison(node);
             if (optionalNormalized.isEmpty()) {
-                return super.visitComparisonExpression(node, complement);
+                return super.visitComparison(node, complement);
             }
             NormalizedSimpleComparison normalized = optionalNormalized.get();
 
             Expression symbolExpression = normalized.getSymbolExpression();
-            if (symbolExpression instanceof SymbolReference) {
+            if (symbolExpression instanceof Reference) {
                 Symbol symbol = Symbol.from(symbolExpression);
                 NullableValue value = normalized.getValue();
                 Type type = value.getType(); // common type for symbol and value
                 return createComparisonExtractionResult(normalized.getComparisonOperator(), symbol, type, value.getValue(), complement)
-                        .orElseGet(() -> super.visitComparisonExpression(node, complement));
+                        .orElseGet(() -> super.visitComparison(node, complement));
             }
-            if (symbolExpression instanceof Cast) {
-                Cast castExpression = (Cast) symbolExpression;
+            if (symbolExpression instanceof Cast castExpression) {
+                // type of expression which is then cast to type of value
+                Type castSourceType = castExpression.expression().type();
+                Type castTargetType = castExpression.type();
+                if (castSourceType instanceof VarcharType && castTargetType == DATE) {
+                    Optional<ExtractionResult> result = createVarcharCastToDateComparisonExtractionResult(
+                            normalized,
+                            (VarcharType) castSourceType,
+                            complement,
+                            node);
+                    if (result.isPresent()) {
+                        return result.get();
+                    }
+                }
                 if (!isImplicitCoercion(castExpression)) {
                     //
                     // we cannot use non-coercion cast to literal_type on symbol side to build tuple domain
@@ -520,156 +497,210 @@ public final class DomainTranslator
                     // end up with tuple domain with just one time point (cast(date_literal as timestamp).
                     // While we need range which maps to single date pointed by date_literal.
                     //
-                    return super.visitComparisonExpression(node, complement);
+                    return super.visitComparison(node, complement);
                 }
-
-                Type castSourceType = typeAnalyzer.getType(session, types, castExpression.getExpression()); // type of expression which is then cast to type of value
 
                 // we use saturated floor cast value -> castSourceType to rewrite original expression to new one with one cast peeled off the symbol side
                 Optional<Expression> coercedExpression = coerceComparisonWithRounding(
-                        castSourceType, castExpression.getExpression(), normalized.getValue(), normalized.getComparisonOperator());
+                        castSourceType, castExpression.expression(), normalized.getValue(), normalized.getComparisonOperator());
 
                 if (coercedExpression.isPresent()) {
                     return process(coercedExpression.get(), complement);
                 }
 
-                return super.visitComparisonExpression(node, complement);
+                return super.visitComparison(node, complement);
             }
-            return super.visitComparisonExpression(node, complement);
+            return super.visitComparison(node, complement);
         }
 
         /**
          * Extract a normalized simple comparison between a QualifiedNameReference and a native value if possible.
          */
-        private Optional<NormalizedSimpleComparison> toNormalizedSimpleComparison(ComparisonExpression comparison)
+        private Optional<NormalizedSimpleComparison> toNormalizedSimpleComparison(Comparison comparison)
         {
-            Map<NodeRef<Expression>, Type> expressionTypes = analyzeExpression(comparison);
-            Object left = new ExpressionInterpreter(comparison.getLeft(), plannerContext, session, expressionTypes).optimize(NoOpSymbolResolver.INSTANCE);
-            Object right = new ExpressionInterpreter(comparison.getRight(), plannerContext, session, expressionTypes).optimize(NoOpSymbolResolver.INSTANCE);
+            Expression left = comparison.left();
+            Expression right = comparison.right();
 
-            Type leftType = expressionTypes.get(NodeRef.of(comparison.getLeft()));
-            Type rightType = expressionTypes.get(NodeRef.of(comparison.getRight()));
-
-            // TODO: re-enable this check once we fix the type coercions in the optimizers
-            // checkArgument(leftType.equals(rightType), "left and right type do not match in comparison expression (%s)", comparison);
-
-            if (left instanceof Expression == right instanceof Expression) {
-                // we expect one side to be expression and other to be value.
+            if (left instanceof Constant == right instanceof Constant) {
+                // One of the terms must be a constant and the other a non-constant
                 return Optional.empty();
             }
 
-            Expression symbolExpression;
-            ComparisonExpression.Operator comparisonOperator;
-            NullableValue value;
-
-            if (left instanceof Expression) {
-                symbolExpression = comparison.getLeft();
-                comparisonOperator = comparison.getOperator();
-                value = new NullableValue(rightType, right);
+            if (left instanceof Constant constant) {
+                return Optional.of(new NormalizedSimpleComparison(right, comparison.operator().flip(), new NullableValue(left.type(), constant.value())));
             }
             else {
-                symbolExpression = comparison.getRight();
-                comparisonOperator = comparison.getOperator().flip();
-                value = new NullableValue(leftType, left);
+                return Optional.of(new NormalizedSimpleComparison(left, comparison.operator(), new NullableValue(right.type(), ((Constant) right).value())));
             }
-
-            return Optional.of(new NormalizedSimpleComparison(symbolExpression, comparisonOperator, value));
         }
 
         private boolean isImplicitCoercion(Cast cast)
         {
-            Map<NodeRef<Expression>, Type> expressionTypes = analyzeExpression(cast);
-            Type actualType = expressionTypes.get(NodeRef.of(cast.getExpression()));
-            Type expectedType = expressionTypes.get(NodeRef.<Expression>of(cast));
-            return typeCoercion.canCoerce(actualType, expectedType);
+            return typeCoercion.canCoerce(cast.expression().type(), cast.type());
         }
 
-        private Map<NodeRef<Expression>, Type> analyzeExpression(Expression expression)
+        private Optional<ExtractionResult> createVarcharCastToDateComparisonExtractionResult(
+                NormalizedSimpleComparison comparison,
+                VarcharType sourceType,
+                boolean complement,
+                Comparison originalExpression)
         {
-            return typeAnalyzer.getTypes(session, types, expression);
+            Expression sourceExpression = ((Cast) comparison.getSymbolExpression()).expression();
+            Comparison.Operator operator = comparison.getComparisonOperator();
+            NullableValue value = comparison.getValue();
+
+            if (complement || value.isNull()) {
+                return Optional.empty();
+            }
+            if (!(sourceExpression instanceof Reference)) {
+                // Calculation is not useful
+                return Optional.empty();
+            }
+            Symbol sourceSymbol = Symbol.from(sourceExpression);
+
+            if (!sourceType.isUnbounded() && sourceType.getBoundedLength() < 10) {
+                // too short
+                return Optional.empty();
+            }
+
+            LocalDate date = LocalDate.ofEpochDay((long) value.getValue());
+            if (date.getYear() < 1001 || date.getYear() > 9998) {
+                // Edge cases. 1-year margin so that we can go to next/prev year for < or > comparisons
+                return Optional.empty();
+            }
+
+            // superset of possible values, for the "normal case"
+            ValueSet valueSet;
+            boolean nullAllowed = false;
+
+            switch (operator) {
+                case EQUAL, IDENTICAL:
+                    valueSet = dateStringRanges(date, sourceType);
+                    nullAllowed = operator == IDENTICAL;
+                    break;
+                case NOT_EQUAL:
+                    if (date.getDayOfMonth() < 10) {
+                        // TODO: possible to handle but cumbersome
+                        return Optional.empty();
+                    }
+                    valueSet = ValueSet.all(sourceType).subtract(dateStringRanges(date, sourceType));
+                    break;
+                case LESS_THAN:
+                case LESS_THAN_OR_EQUAL:
+                    valueSet = ValueSet.ofRanges(Range.lessThan(sourceType, utf8Slice(Integer.toString(date.getYear() + 1))));
+                    break;
+                case GREATER_THAN:
+                case GREATER_THAN_OR_EQUAL:
+                    valueSet = ValueSet.ofRanges(Range.greaterThan(sourceType, utf8Slice(Integer.toString(date.getYear() - 1))));
+                    break;
+                default:
+                    return Optional.empty();
+            }
+
+            // Date representations starting with whitespace, sign or leading zeroes.
+            valueSet = valueSet.union(ValueSet.ofRanges(
+                    Range.lessThan(sourceType, utf8Slice("1")),
+                    Range.greaterThan(sourceType, utf8Slice("9"))));
+
+            return Optional.of(new ExtractionResult(
+                    TupleDomain.withColumnDomains(ImmutableMap.of(sourceSymbol, Domain.create(valueSet, nullAllowed))),
+                    originalExpression));
         }
 
-        private static Optional<ExtractionResult> createComparisonExtractionResult(ComparisonExpression.Operator comparisonOperator, Symbol column, Type type, @Nullable Object value, boolean complement)
+        /**
+         * @return Date representations of the form 2005-09-09, 2005-09-9, 2005-9-09 and 2005-9-9 expanded to ranges:
+         * {@code [2005-09-09, 2005-09-0:), [2005-09-9, 2005-09-:), [2005-9-09, 2005-9-0:), [2005-9-9, 2005-9-:)}
+         * (the {@code :} character is the next one after {@code 9}).
+         */
+        private static SortedRangeSet dateStringRanges(LocalDate date, VarcharType domainType)
+        {
+            checkArgument(date.getYear() >= 1000 && date.getYear() <= 9999, "Unsupported date: %s", date);
+
+            int month = date.getMonthValue();
+            int day = date.getDayOfMonth();
+            boolean isMonthSingleDigit = date.getMonthValue() < 10;
+            boolean isDaySingleDigit = date.getDayOfMonth() < 10;
+
+            // A specific date value like 2005-09-10 can be a result of a CAST for number of various forms,
+            // as the value can have optional sign, leading zeros for the year, and surrounding whitespace,
+            // E.g. '  +002005-9-9  '.
+
+            List<Range> valueRanges = new ArrayList<>(4);
+            for (boolean useSingleDigitMonth : List.of(true, false)) {
+                for (boolean useSingleDigitDay : List.of(true, false)) {
+                    if (useSingleDigitMonth && !isMonthSingleDigit) {
+                        continue;
+                    }
+                    if (useSingleDigitDay && !isDaySingleDigit) {
+                        continue;
+                    }
+                    String dateString = date.getYear() +
+                            ((!useSingleDigitMonth && isMonthSingleDigit) ? "-0" : "-") + month +
+                            ((!useSingleDigitDay && isDaySingleDigit) ? "-0" : "-") + day;
+                    String nextStringPrefix = dateString.substring(0, dateString.length() - 1) + (char) (dateString.charAt(dateString.length() - 1) + 1); // cannot overflow
+                    verify(dateString.length() <= domainType.getLength().orElse(Integer.MAX_VALUE), "dateString length exceeds type bounds");
+                    verify(dateString.length() == nextStringPrefix.length(), "Next string length mismatch");
+                    valueRanges.add(Range.range(domainType, utf8Slice(dateString), true, utf8Slice(nextStringPrefix), false));
+                }
+            }
+            return (SortedRangeSet) ValueSet.ofRanges(valueRanges);
+        }
+
+        private static Optional<ExtractionResult> createComparisonExtractionResult(Comparison.Operator comparisonOperator, Symbol column, Type type, @Nullable Object value, boolean complement)
         {
             if (value == null) {
-                switch (comparisonOperator) {
-                    case EQUAL:
-                    case GREATER_THAN:
-                    case GREATER_THAN_OR_EQUAL:
-                    case LESS_THAN:
-                    case LESS_THAN_OR_EQUAL:
-                    case NOT_EQUAL:
-                        return Optional.of(new ExtractionResult(TupleDomain.none(), TRUE_LITERAL));
-
-                    case IS_DISTINCT_FROM:
-                        Domain domain = complementIfNecessary(Domain.notNull(type), complement);
-                        return Optional.of(new ExtractionResult(
+                return switch (comparisonOperator) {
+                    case EQUAL, GREATER_THAN, GREATER_THAN_OR_EQUAL, LESS_THAN, LESS_THAN_OR_EQUAL, NOT_EQUAL -> Optional.of(new ExtractionResult(TupleDomain.none(), TRUE));
+                    case IDENTICAL -> {
+                        Domain domain = complementIfNecessary(Domain.onlyNull(type), complement);
+                        yield Optional.of(new ExtractionResult(
                                 TupleDomain.withColumnDomains(ImmutableMap.of(column, domain)),
-                                TRUE_LITERAL));
-                }
-                throw new AssertionError("Unhandled operator: " + comparisonOperator);
+                                TRUE));
+                    }
+                };
             }
             if (type.isOrderable()) {
                 return extractOrderableDomain(comparisonOperator, type, value, complement)
-                        .map(domain -> new ExtractionResult(TupleDomain.withColumnDomains(ImmutableMap.of(column, domain)), TRUE_LITERAL));
+                        .map(domain -> new ExtractionResult(TupleDomain.withColumnDomains(ImmutableMap.of(column, domain)), TRUE));
             }
             if (type.isComparable()) {
                 Domain domain = extractEquatableDomain(comparisonOperator, type, value, complement);
                 return Optional.of(new ExtractionResult(
                         TupleDomain.withColumnDomains(ImmutableMap.of(column, domain)),
-                        TRUE_LITERAL));
+                        TRUE));
             }
             throw new AssertionError("Type cannot be used in a comparison expression (should have been caught in analysis): " + type);
         }
 
-        private static Optional<Domain> extractOrderableDomain(ComparisonExpression.Operator comparisonOperator, Type type, Object value, boolean complement)
+        private static Optional<Domain> extractOrderableDomain(Comparison.Operator comparisonOperator, Type type, Object value, boolean complement)
         {
             checkArgument(value != null);
 
             // Handle orderable types which do not have NaN.
             if (!(type instanceof DoubleType) && !(type instanceof RealType)) {
-                switch (comparisonOperator) {
-                    case EQUAL:
-                        return Optional.of(Domain.create(complementIfNecessary(ValueSet.ofRanges(Range.equal(type, value)), complement), false));
-                    case GREATER_THAN:
-                        return Optional.of(Domain.create(complementIfNecessary(ValueSet.ofRanges(Range.greaterThan(type, value)), complement), false));
-                    case GREATER_THAN_OR_EQUAL:
-                        return Optional.of(Domain.create(complementIfNecessary(ValueSet.ofRanges(Range.greaterThanOrEqual(type, value)), complement), false));
-                    case LESS_THAN:
-                        return Optional.of(Domain.create(complementIfNecessary(ValueSet.ofRanges(Range.lessThan(type, value)), complement), false));
-                    case LESS_THAN_OR_EQUAL:
-                        return Optional.of(Domain.create(complementIfNecessary(ValueSet.ofRanges(Range.lessThanOrEqual(type, value)), complement), false));
-                    case NOT_EQUAL:
-                        return Optional.of(Domain.create(complementIfNecessary(ValueSet.ofRanges(Range.lessThan(type, value), Range.greaterThan(type, value)), complement), false));
-                    case IS_DISTINCT_FROM:
-                        // Need to potential complement the whole domain for IS_DISTINCT_FROM since it is null-aware
-                        return Optional.of(complementIfNecessary(Domain.create(ValueSet.ofRanges(Range.lessThan(type, value), Range.greaterThan(type, value)), true), complement));
-                }
-                throw new AssertionError("Unhandled operator: " + comparisonOperator);
+                return switch (comparisonOperator) {
+                    case EQUAL -> Optional.of(Domain.create(complementIfNecessary(ValueSet.ofRanges(Range.equal(type, value)), complement), false));
+                    case IDENTICAL -> Optional.of(Domain.create(complementIfNecessary(ValueSet.ofRanges(Range.equal(type, value)), complement), complement));
+                    case GREATER_THAN -> Optional.of(Domain.create(complementIfNecessary(ValueSet.ofRanges(Range.greaterThan(type, value)), complement), false));
+                    case GREATER_THAN_OR_EQUAL -> Optional.of(Domain.create(complementIfNecessary(ValueSet.ofRanges(Range.greaterThanOrEqual(type, value)), complement), false));
+                    case LESS_THAN -> Optional.of(Domain.create(complementIfNecessary(ValueSet.ofRanges(Range.lessThan(type, value)), complement), false));
+                    case LESS_THAN_OR_EQUAL -> Optional.of(Domain.create(complementIfNecessary(ValueSet.ofRanges(Range.lessThanOrEqual(type, value)), complement), false));
+                    case NOT_EQUAL -> Optional.of(Domain.create(complementIfNecessary(ValueSet.ofRanges(Range.lessThan(type, value), Range.greaterThan(type, value)), complement), false));
+                };
             }
 
             // Handle comparisons against NaN
             if (isFloatingPointNaN(type, value)) {
-                switch (comparisonOperator) {
-                    case EQUAL:
-                    case GREATER_THAN:
-                    case GREATER_THAN_OR_EQUAL:
-                    case LESS_THAN:
-                    case LESS_THAN_OR_EQUAL:
-                        return Optional.of(Domain.create(complementIfNecessary(ValueSet.none(type), complement), false));
-
-                    case NOT_EQUAL:
-                        return Optional.of(Domain.create(complementIfNecessary(ValueSet.all(type), complement), false));
-
-                    case IS_DISTINCT_FROM:
-                        // The Domain should be "all but NaN". It is currently not supported.
-                        return Optional.empty();
-                }
-                throw new AssertionError("Unhandled operator: " + comparisonOperator);
+                return switch (comparisonOperator) {
+                    case EQUAL, GREATER_THAN, GREATER_THAN_OR_EQUAL, LESS_THAN, LESS_THAN_OR_EQUAL ->
+                            Optional.of(Domain.create(complementIfNecessary(ValueSet.none(type), complement), false));
+                    case NOT_EQUAL -> Optional.of(Domain.create(complementIfNecessary(ValueSet.all(type), complement), false));
+                    case IDENTICAL -> Optional.empty(); // The Domain should be "NaN". It is currently not supported.
+                };
             }
 
             // Handle comparisons against a non-NaN value when the compared value might be NaN
-            switch (comparisonOperator) {
+            return switch (comparisonOperator) {
                 /*
                  For comparison operators: EQUAL, GREATER_THAN, GREATER_THAN_OR_EQUAL, LESS_THAN, LESS_THAN_OR_EQUAL,
                  the Domain should not contain NaN, but complemented Domain should contain NaN. It is currently not supported.
@@ -679,87 +710,43 @@ public final class DomainTranslator
                  the Domain should consist of ranges (which do not sum to the whole ValueSet), and NaN.
                  Currently, NaN is only included when ValueSet.isAll().
                   */
-                case EQUAL:
-                    if (complement) {
-                        return Optional.empty();
-                    }
-                    else {
-                        return Optional.of(Domain.create(ValueSet.ofRanges(Range.equal(type, value)), false));
-                    }
-                case GREATER_THAN:
-                    if (complement) {
-                        return Optional.empty();
-                    }
-                    else {
-                        return Optional.of(Domain.create(ValueSet.ofRanges(Range.greaterThan(type, value)), false));
-                    }
-                case GREATER_THAN_OR_EQUAL:
-                    if (complement) {
-                        return Optional.empty();
-                    }
-                    else {
-                        return Optional.of(Domain.create(ValueSet.ofRanges(Range.greaterThanOrEqual(type, value)), false));
-                    }
-                case LESS_THAN:
-                    if (complement) {
-                        return Optional.empty();
-                    }
-                    else {
-                        return Optional.of(Domain.create(ValueSet.ofRanges(Range.lessThan(type, value)), false));
-                    }
-                case LESS_THAN_OR_EQUAL:
-                    if (complement) {
-                        return Optional.empty();
-                    }
-                    else {
-                        return Optional.of(Domain.create(ValueSet.ofRanges(Range.lessThanOrEqual(type, value)), false));
-                    }
-                case NOT_EQUAL:
-                    if (complement) {
-                        return Optional.of(Domain.create(ValueSet.ofRanges(Range.equal(type, value)), false));
-                    }
-                    else {
-                        return Optional.empty();
-                    }
-                case IS_DISTINCT_FROM:
-                    if (complement) {
-                        return Optional.of(Domain.create(ValueSet.ofRanges(Range.equal(type, value)), false));
-                    }
-                    else {
-                        return Optional.empty();
-                    }
-            }
-            throw new AssertionError("Unhandled operator: " + comparisonOperator);
+                case EQUAL, IDENTICAL -> complement ?
+                        Optional.empty() :
+                        Optional.of(Domain.create(ValueSet.ofRanges(Range.equal(type, value)), false));
+                case GREATER_THAN -> complement ?
+                        Optional.empty() :
+                        Optional.of(Domain.create(ValueSet.ofRanges(Range.greaterThan(type, value)), false));
+                case GREATER_THAN_OR_EQUAL -> complement ?
+                        Optional.empty() :
+                        Optional.of(Domain.create(ValueSet.ofRanges(Range.greaterThanOrEqual(type, value)), false));
+                case LESS_THAN -> complement ?
+                        Optional.empty() :
+                        Optional.of(Domain.create(ValueSet.ofRanges(Range.lessThan(type, value)), false));
+                case LESS_THAN_OR_EQUAL -> complement ?
+                        Optional.empty() :
+                        Optional.of(Domain.create(ValueSet.ofRanges(Range.lessThanOrEqual(type, value)), false));
+                case NOT_EQUAL -> complement ?
+                        Optional.of(Domain.create(ValueSet.ofRanges(Range.equal(type, value)), false)) :
+                        Optional.empty();
+            };
         }
 
-        private static Domain extractEquatableDomain(ComparisonExpression.Operator comparisonOperator, Type type, Object value, boolean complement)
+        private static Domain extractEquatableDomain(Comparison.Operator comparisonOperator, Type type, Object value, boolean complement)
         {
             checkArgument(value != null);
-            switch (comparisonOperator) {
-                case EQUAL:
-                    return Domain.create(complementIfNecessary(ValueSet.of(type, value), complement), false);
-                case NOT_EQUAL:
-                    return Domain.create(complementIfNecessary(ValueSet.of(type, value).complement(), complement), false);
-
-                case IS_DISTINCT_FROM:
-                    // Need to potential complement the whole domain for IS_DISTINCT_FROM since it is null-aware
-                    return complementIfNecessary(Domain.create(ValueSet.of(type, value).complement(), true), complement);
-
-                case LESS_THAN:
-                case LESS_THAN_OR_EQUAL:
-                case GREATER_THAN:
-                case GREATER_THAN_OR_EQUAL:
-                    // not applicable to equatable types
-                    break;
-            }
-            throw new AssertionError("Unhandled operator: " + comparisonOperator);
+            return switch (comparisonOperator) {
+                case EQUAL -> Domain.create(complementIfNecessary(ValueSet.of(type, value), complement), false);
+                case NOT_EQUAL -> Domain.create(complementIfNecessary(ValueSet.of(type, value).complement(), complement), false);
+                case IDENTICAL -> Domain.create(complementIfNecessary(ValueSet.of(type, value), complement), complement);
+                default -> throw new IllegalArgumentException("Unhandled operator: " + comparisonOperator);
+            };
         }
 
         private Optional<Expression> coerceComparisonWithRounding(
                 Type symbolExpressionType,
                 Expression symbolExpression,
                 NullableValue nullableValue,
-                ComparisonExpression.Operator comparisonOperator)
+                Comparison.Operator comparisonOperator)
         {
             requireNonNull(nullableValue, "nullableValue is null");
             if (nullableValue.isNull()) {
@@ -767,8 +754,19 @@ public final class DomainTranslator
             }
             Type valueType = nullableValue.getType();
             Object value = nullableValue.getValue();
-            return floorValue(valueType, symbolExpressionType, value)
-                    .map(floorValue -> rewriteComparisonExpression(symbolExpressionType, symbolExpression, valueType, value, floorValue, comparisonOperator));
+            Optional<Object> floorValueOptional;
+            try {
+                floorValueOptional = floorValue(valueType, symbolExpressionType, value);
+            }
+            catch (TrinoException e) {
+                ErrorCode errorCode = e.getErrorCode();
+                if (INVALID_CAST_ARGUMENT.toErrorCode().equals(errorCode)) {
+                    // There's no such value at symbolExpressionType
+                    return Optional.of(FALSE);
+                }
+                throw e;
+            }
+            return floorValueOptional.map(floorValue -> rewriteComparisonExpression(symbolExpressionType, symbolExpression, valueType, value, floorValue, comparisonOperator));
         }
 
         private Expression rewriteComparisonExpression(
@@ -777,62 +775,59 @@ public final class DomainTranslator
                 Type valueType,
                 Object originalValue,
                 Object coercedValue,
-                ComparisonExpression.Operator comparisonOperator)
+                Comparison.Operator comparisonOperator)
         {
             int originalComparedToCoerced = compareOriginalValueToCoerced(valueType, originalValue, symbolExpressionType, coercedValue);
             boolean coercedValueIsEqualToOriginal = originalComparedToCoerced == 0;
             boolean coercedValueIsLessThanOriginal = originalComparedToCoerced > 0;
             boolean coercedValueIsGreaterThanOriginal = originalComparedToCoerced < 0;
-            Expression coercedLiteral = literalEncoder.toExpression(session, coercedValue, symbolExpressionType);
+            Expression coercedLiteral = new Constant(symbolExpressionType, coercedValue);
 
-            switch (comparisonOperator) {
-                case GREATER_THAN_OR_EQUAL:
-                case GREATER_THAN:
+            return switch (comparisonOperator) {
+                case GREATER_THAN_OR_EQUAL, GREATER_THAN -> {
                     if (coercedValueIsGreaterThanOriginal) {
-                        return new ComparisonExpression(GREATER_THAN_OR_EQUAL, symbolExpression, coercedLiteral);
+                        yield new Comparison(GREATER_THAN_OR_EQUAL, symbolExpression, coercedLiteral);
                     }
                     if (coercedValueIsEqualToOriginal) {
-                        return new ComparisonExpression(comparisonOperator, symbolExpression, coercedLiteral);
+                        yield new Comparison(comparisonOperator, symbolExpression, coercedLiteral);
                     }
                     if (coercedValueIsLessThanOriginal) {
-                        return new ComparisonExpression(GREATER_THAN, symbolExpression, coercedLiteral);
+                        yield new Comparison(GREATER_THAN, symbolExpression, coercedLiteral);
                     }
                     throw new AssertionError("Unreachable");
-                case LESS_THAN_OR_EQUAL:
-                case LESS_THAN:
+                }
+                case LESS_THAN_OR_EQUAL, LESS_THAN -> {
                     if (coercedValueIsLessThanOriginal) {
-                        return new ComparisonExpression(LESS_THAN_OR_EQUAL, symbolExpression, coercedLiteral);
+                        yield new Comparison(LESS_THAN_OR_EQUAL, symbolExpression, coercedLiteral);
                     }
                     if (coercedValueIsEqualToOriginal) {
-                        return new ComparisonExpression(comparisonOperator, symbolExpression, coercedLiteral);
+                        yield new Comparison(comparisonOperator, symbolExpression, coercedLiteral);
                     }
                     if (coercedValueIsGreaterThanOriginal) {
-                        return new ComparisonExpression(LESS_THAN, symbolExpression, coercedLiteral);
+                        yield new Comparison(LESS_THAN, symbolExpression, coercedLiteral);
                     }
                     throw new AssertionError("Unreachable");
-                case EQUAL:
+                }
+                case EQUAL -> {
                     if (coercedValueIsEqualToOriginal) {
-                        return new ComparisonExpression(EQUAL, symbolExpression, coercedLiteral);
+                        yield new Comparison(EQUAL, symbolExpression, coercedLiteral);
                     }
                     // Return something that is false for all non-null values
-                    return and(new ComparisonExpression(GREATER_THAN, symbolExpression, coercedLiteral),
-                            new ComparisonExpression(LESS_THAN, symbolExpression, coercedLiteral));
-                case NOT_EQUAL:
+                    yield and(new Comparison(GREATER_THAN, symbolExpression, coercedLiteral),
+                            new Comparison(LESS_THAN, symbolExpression, coercedLiteral));
+                }
+                case NOT_EQUAL -> {
                     if (coercedValueIsEqualToOriginal) {
-                        return new ComparisonExpression(comparisonOperator, symbolExpression, coercedLiteral);
+                        yield new Comparison(comparisonOperator, symbolExpression, coercedLiteral);
                     }
                     // Return something that is true for all non-null values
-                    return or(new ComparisonExpression(EQUAL, symbolExpression, coercedLiteral),
-                            new ComparisonExpression(NOT_EQUAL, symbolExpression, coercedLiteral));
-                case IS_DISTINCT_FROM: {
-                    if (coercedValueIsEqualToOriginal) {
-                        return new ComparisonExpression(comparisonOperator, symbolExpression, coercedLiteral);
-                    }
-                    return TRUE_LITERAL;
+                    yield or(new Comparison(EQUAL, symbolExpression, coercedLiteral),
+                            new Comparison(NOT_EQUAL, symbolExpression, coercedLiteral));
                 }
-            }
-
-            throw new IllegalArgumentException("Unhandled operator: " + comparisonOperator);
+                case IDENTICAL -> coercedValueIsEqualToOriginal ?
+                        TRUE :
+                        new Comparison(comparisonOperator, symbolExpression, coercedLiteral);
+            };
         }
 
         private Optional<Object> floorValue(Type fromType, Type toType, Object value)
@@ -844,7 +839,7 @@ public final class DomainTranslator
         private Optional<ResolvedFunction> getSaturatedFloorCastOperator(Type fromType, Type toType)
         {
             try {
-                return Optional.of(plannerContext.getMetadata().getCoercion(session, SATURATED_FLOOR_CAST, fromType, toType));
+                return Optional.of(plannerContext.getMetadata().getCoercion(SATURATED_FLOOR_CAST, fromType, toType));
             }
             catch (OperatorNotFoundException e) {
                 return Optional.empty();
@@ -855,7 +850,7 @@ public final class DomainTranslator
         {
             requireNonNull(originalValueType, "originalValueType is null");
             requireNonNull(coercedValue, "coercedValue is null");
-            ResolvedFunction castToOriginalTypeOperator = plannerContext.getMetadata().getCoercion(session, coercedValueType, originalValueType);
+            ResolvedFunction castToOriginalTypeOperator = plannerContext.getMetadata().getCoercion(coercedValueType, originalValueType);
             Object coercedValueInOriginalType = functionInvoker.invoke(castToOriginalTypeOperator, session.toConnectorSession(), coercedValue);
             // choice of placing unordered values first or last does not matter for this code
             MethodHandle comparisonOperator = plannerContext.getTypeOperators().getComparisonUnorderedLastOperator(originalValueType, simpleConvention(FAIL_ON_NULL, NEVER_NULL, NEVER_NULL));
@@ -869,14 +864,9 @@ public final class DomainTranslator
         }
 
         @Override
-        protected ExtractionResult visitInPredicate(InPredicate node, Boolean complement)
+        protected ExtractionResult visitIn(In node, Boolean complement)
         {
-            if (!(node.getValueList() instanceof InListExpression)) {
-                return super.visitInPredicate(node, complement);
-            }
-
-            InListExpression valueList = (InListExpression) node.getValueList();
-            checkState(!valueList.getValues().isEmpty(), "InListExpression should never be empty");
+            checkState(!node.valueList().isEmpty(), "InListExpression should never be empty");
 
             Optional<ExtractionResult> directExtractionResult = processSimpleInPredicate(node, complement);
             if (directExtractionResult.isPresent()) {
@@ -884,8 +874,8 @@ public final class DomainTranslator
             }
 
             ImmutableList.Builder<Expression> disjuncts = ImmutableList.builder();
-            for (Expression expression : valueList.getValues()) {
-                disjuncts.add(new ComparisonExpression(EQUAL, node.getValue(), expression));
+            for (Expression expression : node.valueList()) {
+                disjuncts.add(new Comparison(EQUAL, node.value(), expression));
             }
             ExtractionResult extractionResult = process(or(disjuncts.build()), complement);
 
@@ -893,58 +883,58 @@ public final class DomainTranslator
             if (extractionResult.tupleDomain.isAll()) {
                 Expression originalPredicate = node;
                 if (complement) {
-                    originalPredicate = new NotExpression(originalPredicate);
+                    originalPredicate = not(plannerContext.getMetadata(), originalPredicate);
                 }
                 return new ExtractionResult(extractionResult.tupleDomain, originalPredicate);
             }
             return extractionResult;
         }
 
-        private Optional<ExtractionResult> processSimpleInPredicate(InPredicate node, Boolean complement)
+        private Optional<ExtractionResult> processSimpleInPredicate(In node, Boolean complement)
         {
-            if (!(node.getValue() instanceof SymbolReference)) {
+            if (!(node.value() instanceof Reference)) {
                 return Optional.empty();
             }
-            Symbol symbol = Symbol.from(node.getValue());
-            Map<NodeRef<Expression>, Type> expressionTypes = analyzeExpression(node);
-            Type type = expressionTypes.get(NodeRef.of(node.getValue()));
-            InListExpression valueList = (InListExpression) node.getValueList();
-            List<Object> inValues = new ArrayList<>(valueList.getValues().size());
+            Symbol symbol = Symbol.from(node.value());
+            Type type = node.value().type();
+            List<Object> inValues = new ArrayList<>(node.valueList().size());
             List<Expression> excludedExpressions = new ArrayList<>();
 
-            for (Expression expression : valueList.getValues()) {
-                Object value = new ExpressionInterpreter(expression, plannerContext, session, expressionTypes)
-                        .optimize(NoOpSymbolResolver.INSTANCE);
-                if (value == null || value instanceof NullLiteral) {
-                    if (!complement) {
+            for (Expression expression : node.valueList()) {
+                if (expression instanceof Constant constant) {
+                    if (constant.value() == null) {
+                        if (complement) {
+                            // NOT IN is equivalent to NOT(s eq v1) AND NOT(s eq v2). When any right value is NULL, the comparison result is NULL, so AND's result can be at most
+                            // NULL (effectively false in predicate context)
+                            return Optional.of(new ExtractionResult(TupleDomain.none(), TRUE));
+                        }
                         // in case of IN, NULL on the right results with NULL comparison result (effectively false in predicate context), so can be ignored, as the
                         // comparison results are OR-ed
-                        continue;
                     }
-                    // NOT IN is equivalent to NOT(s eq v1) AND NOT(s eq v2). When any right value is NULL, the comparison result is NULL, so AND's result can be at most
-                    // NULL (effectively false in predicate context)
-                    return Optional.of(new ExtractionResult(TupleDomain.none(), TRUE_LITERAL));
+                    else if (type instanceof RealType || type instanceof DoubleType) {
+                        // NaN can be ignored: it always compares to false, as if it was not among IN's values
+                        if (!isFloatingPointNaN(type, constant.value())) {
+                            if (complement) {
+                                // in case of NOT IN with floating point, the NaN on the left passes the test (unless a NULL is found, and we exited earlier)
+                                // but this cannot currently be described with a Domain other than Domain.all
+                                excludedExpressions.add(expression);
+                            }
+                            else {
+                                inValues.add(constant.value());
+                            }
+                        }
+                    }
+                    else {
+                        inValues.add(constant.value());
+                    }
                 }
-                if (value instanceof Expression) {
+                else {
                     if (!complement) {
                         // in case of IN, expression on the right side prevents determining the domain: any lhs value can be eligible
                         return Optional.of(new ExtractionResult(TupleDomain.all(), node));
                     }
                     // in case of NOT IN, expression on the right side still allows determining values that are *not* part of the final domain
-                    excludedExpressions.add(((Expression) value));
-                    continue;
-                }
-                if (isFloatingPointNaN(type, value)) {
-                    // NaN can be ignored: it always compares to false, as if it was not among IN's values
-                    continue;
-                }
-                if (complement && (type instanceof RealType || type instanceof DoubleType)) {
-                    // in case of NOT IN with floating point, the NaN on the left passes the test (unless a NULL is found, and we exited earlier)
-                    // but this cannot currently be described with a Domain other than Domain.all
                     excludedExpressions.add(expression);
-                }
-                else {
-                    inValues.add(value);
                 }
             }
 
@@ -956,64 +946,55 @@ public final class DomainTranslator
 
             Expression remainingExpression;
             if (excludedExpressions.isEmpty()) {
-                remainingExpression = TRUE_LITERAL;
+                remainingExpression = TRUE;
             }
             else if (excludedExpressions.size() == 1) {
-                remainingExpression = new NotExpression(new ComparisonExpression(EQUAL, node.getValue(), getOnlyElement(excludedExpressions)));
+                remainingExpression = not(plannerContext.getMetadata(), new Comparison(EQUAL, node.value(), getOnlyElement(excludedExpressions)));
             }
             else {
-                remainingExpression = new NotExpression(new InPredicate(node.getValue(), new InListExpression(excludedExpressions)));
+                remainingExpression = not(plannerContext.getMetadata(), new In(node.value(), excludedExpressions));
             }
 
             return Optional.of(new ExtractionResult(tupleDomain, remainingExpression));
         }
 
         @Override
-        protected ExtractionResult visitBetweenPredicate(BetweenPredicate node, Boolean complement)
+        protected ExtractionResult visitBetween(Between node, Boolean complement)
         {
             // Re-write as two comparison expressions
             return process(and(
-                    new ComparisonExpression(GREATER_THAN_OR_EQUAL, node.getValue(), node.getMin()),
-                    new ComparisonExpression(LESS_THAN_OR_EQUAL, node.getValue(), node.getMax())), complement);
+                    new Comparison(GREATER_THAN_OR_EQUAL, node.value(), node.min()),
+                    new Comparison(LESS_THAN_OR_EQUAL, node.value(), node.max())), complement);
         }
 
-        @Override
-        protected ExtractionResult visitLikePredicate(LikePredicate node, Boolean complement)
+        private Optional<ExtractionResult> tryVisitLikeFunction(Call node, Boolean complement)
         {
-            Optional<ExtractionResult> result = tryVisitLikePredicate(node, complement);
-            return result.orElseGet(() -> super.visitLikePredicate(node, complement));
-        }
+            Expression value = node.arguments().get(0);
+            Expression patternArgument = node.arguments().get(1);
 
-        private Optional<ExtractionResult> tryVisitLikePredicate(LikePredicate node, Boolean complement)
-        {
-            if (!(node.getValue() instanceof SymbolReference)) {
+            if (!(value instanceof Reference)) {
                 // LIKE not on a symbol
                 return Optional.empty();
             }
 
-            if (!(node.getPattern() instanceof StringLiteral)) {
-                // dynamic pattern
-                return Optional.empty();
-            }
-
-            if (node.getEscape().isPresent() && !(node.getEscape().get() instanceof StringLiteral)) {
-                // dynamic escape
-                return Optional.empty();
-            }
-
-            Type type = typeAnalyzer.getType(session, types, node.getValue());
-            if (!(type instanceof VarcharType)) {
+            Type type = value.type();
+            if (!(type instanceof VarcharType varcharType)) {
                 // TODO support CharType
                 return Optional.empty();
             }
-            VarcharType varcharType = (VarcharType) type;
 
-            Symbol symbol = Symbol.from(node.getValue());
-            Slice pattern = Slices.utf8Slice(((StringLiteral) node.getPattern()).getValue());
-            Optional<Slice> escape = node.getEscape()
-                    .map(StringLiteral.class::cast)
-                    .map(StringLiteral::getValue)
-                    .map(Slices::utf8Slice);
+            Symbol symbol = Symbol.from(value);
+
+            if (node.arguments().size() > 2 || !(patternArgument instanceof Constant patternConstant)) {
+                // dynamic pattern or escape
+                return Optional.empty();
+            }
+
+            LikePattern matcher = (LikePattern) patternConstant.value();
+
+            Slice pattern = utf8Slice(matcher.getPattern());
+            Optional<Slice> escape = matcher.getEscape()
+                    .map(character -> Slices.utf8Slice(character.toString()));
 
             int patternConstantPrefixBytes = LikeFunctions.patternConstantPrefixBytes(pattern, escape);
             if (patternConstantPrefixBytes == pattern.length()) {
@@ -1029,7 +1010,7 @@ public final class DomainTranslator
                     valueSet = ValueSet.none(type);
                 }
                 Domain domain = Domain.create(complementIfNecessary(valueSet, complement), false);
-                return Optional.of(new ExtractionResult(TupleDomain.withColumnDomains(ImmutableMap.of(symbol, domain)), TRUE_LITERAL));
+                return Optional.of(new ExtractionResult(TupleDomain.withColumnDomains(ImmutableMap.of(symbol, domain)), TRUE));
             }
 
             if (complement || patternConstantPrefixBytes == 0) {
@@ -1042,38 +1023,47 @@ public final class DomainTranslator
         }
 
         @Override
-        protected ExtractionResult visitFunctionCall(FunctionCall node, Boolean complement)
+        protected ExtractionResult visitCall(Call node, Boolean complement)
         {
-            String name = ResolvedFunction.extractFunctionName(node.getName());
-            if (name.equals("starts_with")) {
+            CatalogSchemaFunctionName name = node.function().name();
+            if (name.equals(builtinFunctionName("starts_with"))) {
                 Optional<ExtractionResult> result = tryVisitStartsWithFunction(node, complement);
                 if (result.isPresent()) {
                     return result.get();
                 }
             }
+            else if (name.equals(builtinFunctionName(LIKE_FUNCTION_NAME))) {
+                Optional<ExtractionResult> result = tryVisitLikeFunction(node, complement);
+                if (result.isPresent()) {
+                    return result.get();
+                }
+            }
+            else if (name.equals(builtinFunctionName("$not"))) {
+                return process(node.arguments().getFirst(), !complement);
+            }
             return visitExpression(node, complement);
         }
 
-        private Optional<ExtractionResult> tryVisitStartsWithFunction(FunctionCall node, Boolean complement)
+        private Optional<ExtractionResult> tryVisitStartsWithFunction(Call node, Boolean complement)
         {
-            List<Expression> args = node.getArguments();
+            List<Expression> args = node.arguments();
             if (args.size() != 2) {
                 return Optional.empty();
             }
 
             Expression target = args.get(0);
-            if (!(target instanceof SymbolReference)) {
+            if (!(target instanceof Reference)) {
                 // Target is not a symbol
                 return Optional.empty();
             }
 
             Expression prefix = args.get(1);
-            if (!(prefix instanceof StringLiteral)) {
+            if (!(prefix instanceof Constant literal && literal.type().equals(VarcharType.VARCHAR))) {
                 // dynamic pattern
                 return Optional.empty();
             }
 
-            Type type = typeAnalyzer.getType(session, types, target);
+            Type type = target.type();
             if (!(type instanceof VarcharType)) {
                 // TODO support CharType
                 return Optional.empty();
@@ -1083,7 +1073,7 @@ public final class DomainTranslator
             }
 
             Symbol symbol = Symbol.from(target);
-            Slice constantPrefix = Slices.utf8Slice(((StringLiteral) prefix).getValue());
+            Slice constantPrefix = (Slice) literal.value();
 
             return createRangeDomain(type, constantPrefix).map(domain -> new ExtractionResult(TupleDomain.withColumnDomains(ImmutableMap.of(symbol, domain)), node));
         }
@@ -1105,7 +1095,7 @@ public final class DomainTranslator
             }
 
             Slice lowerBound = constantPrefix;
-            Slice upperBound = Slices.copyOf(constantPrefix.slice(0, lastIncrementable + lengthOfCodePoint(constantPrefix, lastIncrementable)));
+            Slice upperBound = constantPrefix.slice(0, lastIncrementable + lengthOfCodePoint(constantPrefix, lastIncrementable)).copy();
             setCodePointAt(getCodePointAt(constantPrefix, lastIncrementable) + 1, upperBound, lastIncrementable);
 
             Domain domain = Domain.create(ValueSet.ofRanges(Range.range(type, lowerBound, true, upperBound, false)), false);
@@ -1113,57 +1103,44 @@ public final class DomainTranslator
         }
 
         @Override
-        protected ExtractionResult visitIsNullPredicate(IsNullPredicate node, Boolean complement)
+        protected ExtractionResult visitIsNull(IsNull node, Boolean complement)
         {
-            if (!(node.getValue() instanceof SymbolReference)) {
-                return super.visitIsNullPredicate(node, complement);
+            if (!(node.value() instanceof Reference)) {
+                return super.visitIsNull(node, complement);
             }
 
-            Symbol symbol = Symbol.from(node.getValue());
-            Type columnType = checkedTypeLookup(symbol);
+            Symbol symbol = Symbol.from(node.value());
+            Type columnType = symbol.type();
             Domain domain = complementIfNecessary(Domain.onlyNull(columnType), complement);
             return new ExtractionResult(
                     TupleDomain.withColumnDomains(ImmutableMap.of(symbol, domain)),
-                    TRUE_LITERAL);
+                    TRUE);
         }
 
         @Override
-        protected ExtractionResult visitIsNotNullPredicate(IsNotNullPredicate node, Boolean complement)
+        protected ExtractionResult visitConstant(Constant node, Boolean complement)
         {
-            if (!(node.getValue() instanceof SymbolReference)) {
-                return super.visitIsNotNullPredicate(node, complement);
+            if (node.value() == null) {
+                return new ExtractionResult(TupleDomain.none(), TRUE);
             }
 
-            Symbol symbol = Symbol.from(node.getValue());
-            Type columnType = checkedTypeLookup(symbol);
+            if (node.type().equals(BOOLEAN)) {
+                boolean value = (boolean) node.value();
+                value = complement != value;
+                return new ExtractionResult(value ? TupleDomain.all() : TupleDomain.none(), TRUE);
+            }
 
-            Domain domain = complementIfNecessary(Domain.notNull(columnType), complement);
-            return new ExtractionResult(
-                    TupleDomain.withColumnDomains(ImmutableMap.of(symbol, domain)),
-                    TRUE_LITERAL);
-        }
-
-        @Override
-        protected ExtractionResult visitBooleanLiteral(BooleanLiteral node, Boolean complement)
-        {
-            boolean value = complement ? !node.getValue() : node.getValue();
-            return new ExtractionResult(value ? TupleDomain.all() : TupleDomain.none(), TRUE_LITERAL);
-        }
-
-        @Override
-        protected ExtractionResult visitNullLiteral(NullLiteral node, Boolean complement)
-        {
-            return new ExtractionResult(TupleDomain.none(), TRUE_LITERAL);
+            return super.visitConstant(node, complement);
         }
     }
 
     private static class NormalizedSimpleComparison
     {
         private final Expression symbolExpression;
-        private final ComparisonExpression.Operator comparisonOperator;
+        private final Comparison.Operator comparisonOperator;
         private final NullableValue value;
 
-        public NormalizedSimpleComparison(Expression symbolExpression, ComparisonExpression.Operator comparisonOperator, NullableValue value)
+        public NormalizedSimpleComparison(Expression symbolExpression, Comparison.Operator comparisonOperator, NullableValue value)
         {
             this.symbolExpression = requireNonNull(symbolExpression, "symbolExpression is null");
             this.comparisonOperator = requireNonNull(comparisonOperator, "comparisonOperator is null");
@@ -1175,7 +1152,7 @@ public final class DomainTranslator
             return symbolExpression;
         }
 
-        public ComparisonExpression.Operator getComparisonOperator()
+        public Comparison.Operator getComparisonOperator()
         {
             return comparisonOperator;
         }

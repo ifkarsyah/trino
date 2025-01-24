@@ -13,12 +13,15 @@
  */
 package io.trino.testing.containers;
 
+import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.net.HostAndPort;
+import dev.failsafe.Failsafe;
+import dev.failsafe.RetryPolicy;
 import io.airlift.log.Logger;
-import net.jodah.failsafe.Failsafe;
-import net.jodah.failsafe.RetryPolicy;
+import io.trino.testing.ResourcePresence;
+import org.testcontainers.containers.BindMode;
 import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
@@ -87,7 +90,7 @@ public abstract class BaseTestContainer
                 .withStartupCheckStrategy(new IsRunningStartupCheckStrategy())
                 .waitingFor(Wait.forListeningPort())
                 .withStartupTimeout(Duration.ofMinutes(5));
-        network.ifPresent(container::withNetwork);
+        network.ifPresent(net -> container.withNetwork(net).withNetworkAliases(hostName));
     }
 
     protected void withRunCommand(List<String> runCommand)
@@ -112,6 +115,16 @@ public abstract class BaseTestContainer
                 dockerPath);
     }
 
+    protected void mountDirectory(String hostPath, String dockerPath)
+    {
+        container.addFileSystemBind(hostPath, dockerPath, BindMode.READ_WRITE);
+    }
+
+    protected void withCreateContainerModifier(Consumer<CreateContainerCmd> modifier)
+    {
+        container.withCreateContainerCmdModifier(modifier);
+    }
+
     protected HostAndPort getMappedHostAndPortForExposedPort(int exposedPort)
     {
         return fromParts(container.getHost(), container.getMappedPort(exposedPort));
@@ -119,14 +132,23 @@ public abstract class BaseTestContainer
 
     public void start()
     {
-        Failsafe.with(new RetryPolicy<>()
-                        .withMaxRetries(startupRetryLimit)
-                        .onRetry(event -> log.warn(
-                                "%s initialization failed (attempt %s), will retry. Exception: %s",
-                                this.getClass().getSimpleName(),
-                                event.getAttemptCount(),
-                                event.getLastFailure().getMessage())))
-                .get(() -> TestContainers.startOrReuse(this.container));
+        GenericContainer<?> container = this.container;
+        try {
+            Failsafe.with(RetryPolicy.builder()
+                            .withMaxRetries(startupRetryLimit)
+                            .onRetry(event -> log.warn(
+                                    "%s initialization failed (attempt %s), will retry. Exception: %s",
+                                    this.getClass().getSimpleName(),
+                                    event.getAttemptCount(),
+                                    event.getLastException().getMessage()))
+                            .build())
+                    .get(() -> TestContainers.startOrReuse(container));
+        }
+        catch (Throwable e) {
+            try (container) {
+                throw e;
+            }
+        }
     }
 
     public void stop()
@@ -134,7 +156,12 @@ public abstract class BaseTestContainer
         container.stop();
     }
 
-    public void executeInContainerFailOnError(String... commandAndArgs)
+    public String getContainerId()
+    {
+        return container.getContainerId();
+    }
+
+    public String executeInContainerFailOnError(String... commandAndArgs)
     {
         Container.ExecResult execResult = executeInContainer(commandAndArgs);
         if (execResult.getExitCode() != 0) {
@@ -144,6 +171,7 @@ public abstract class BaseTestContainer
             log.error("stdout: %s", execResult.getStdout());
             throw new RuntimeException(message);
         }
+        return execResult.getStdout();
     }
 
     public Container.ExecResult executeInContainer(String... commandAndArgs)
@@ -160,6 +188,12 @@ public abstract class BaseTestContainer
     public void close()
     {
         stop();
+    }
+
+    @ResourcePresence
+    public boolean isPresent()
+    {
+        return container.isRunning() || container.getContainerId() != null;
     }
 
     protected abstract static class Builder<SELF extends BaseTestContainer.Builder<SELF, BUILD>, BUILD extends BaseTestContainer>

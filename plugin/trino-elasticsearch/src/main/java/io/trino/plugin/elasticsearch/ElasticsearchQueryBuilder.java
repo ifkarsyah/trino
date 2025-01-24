@@ -63,14 +63,14 @@ public final class ElasticsearchQueryBuilder
                 ElasticsearchColumnHandle column = entry.getKey();
                 Domain domain = entry.getValue();
 
-                checkArgument(!domain.isNone(), "Unexpected NONE domain for %s", column.getName());
+                checkArgument(!domain.isNone(), "Unexpected NONE domain for %s", column.name());
                 if (!domain.isAll()) {
-                    addPredicateToQueryBuilder(queryBuilder, column.getName(), domain, column.getType());
+                    addPredicateToQueryBuilder(queryBuilder, column.name(), domain, column.type());
                 }
             }
         }
 
-        regexes.forEach((name, value) -> queryBuilder.filter(new BoolQueryBuilder().must(((new RegexpQueryBuilder(name, value))))));
+        regexes.forEach((name, value) -> queryBuilder.filter(new BoolQueryBuilder().must(new RegexpQueryBuilder(name, value))));
 
         query.map(QueryStringQueryBuilder::new)
                 .ifPresent(queryBuilder::must);
@@ -100,13 +100,12 @@ public final class ElasticsearchQueryBuilder
             queryBuilder.filter(getOnlyElement(shouldClauses));
             return;
         }
-        else if (shouldClauses.size() > 1) {
+        if (shouldClauses.size() > 1) {
             BoolQueryBuilder boolQueryBuilder = new BoolQueryBuilder();
             shouldClauses.forEach(boolQueryBuilder::should);
             queryBuilder.filter(boolQueryBuilder);
             return;
         }
-        return;
     }
 
     private static List<QueryBuilder> getShouldClauses(String columnName, Domain domain, Type type)

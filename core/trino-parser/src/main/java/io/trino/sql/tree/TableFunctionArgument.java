@@ -30,10 +30,10 @@ public class TableFunctionArgument
 
     public TableFunctionArgument(NodeLocation location, Optional<Identifier> name, Node value)
     {
-        super(Optional.of(location));
+        super(location);
         this.name = requireNonNull(name, "name is null");
         requireNonNull(value, "value is null");
-        checkArgument(value instanceof TableArgument || value instanceof DescriptorArgument || value instanceof Expression);
+        checkArgument(value instanceof TableFunctionTableArgument || value instanceof TableFunctionDescriptorArgument || value instanceof Expression);
         this.value = value;
     }
 

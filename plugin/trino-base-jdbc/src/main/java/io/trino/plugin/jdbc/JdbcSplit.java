@@ -15,30 +15,43 @@ package io.trino.plugin.jdbc;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.SizeOf;
-import io.trino.spi.HostAddress;
 import io.trino.spi.connector.ConnectorSplit;
-import org.openjdk.jol.info.ClassLayout;
+import io.trino.spi.predicate.TupleDomain;
 
-import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.slice.SizeOf.sizeOf;
 import static java.util.Objects.requireNonNull;
 
 public class JdbcSplit
         implements ConnectorSplit
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(JdbcSplit.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(JdbcSplit.class);
 
     private final Optional<String> additionalPredicate;
+    private final TupleDomain<JdbcColumnHandle> dynamicFilter;
+
+    public JdbcSplit(Optional<String> additionalPredicate)
+    {
+        this(additionalPredicate, TupleDomain.all());
+    }
 
     @JsonCreator
     public JdbcSplit(
-            @JsonProperty("additionalPredicate") Optional<String> additionalPredicate)
+            @JsonProperty("additionalPredicate") Optional<String> additionalPredicate,
+            @JsonProperty("dynamicFilter") TupleDomain<JdbcColumnHandle> dynamicFilter)
     {
         this.additionalPredicate = requireNonNull(additionalPredicate, "additionalPredicate is null");
+        this.dynamicFilter = requireNonNull(dynamicFilter, "dynamicFilter is null");
+    }
+
+    public JdbcSplit withDynamicFilter(TupleDomain<JdbcColumnHandle> dynamicFilter)
+    {
+        return new JdbcSplit(additionalPredicate, dynamicFilter);
     }
 
     @JsonProperty
@@ -47,28 +60,25 @@ public class JdbcSplit
         return additionalPredicate;
     }
 
-    @Override
-    public boolean isRemotelyAccessible()
+    @JsonProperty
+    public TupleDomain<JdbcColumnHandle> getDynamicFilter()
     {
-        return true;
+        return dynamicFilter;
     }
 
     @Override
-    public List<HostAddress> getAddresses()
+    public Map<String, String> getSplitInfo()
     {
-        return ImmutableList.of();
-    }
-
-    @Override
-    public Object getInfo()
-    {
-        return this;
+        return additionalPredicate
+                .map(value -> ImmutableMap.of("additionalPredicate", value))
+                .orElseGet(ImmutableMap::of);
     }
 
     @Override
     public long getRetainedSizeInBytes()
     {
         return INSTANCE_SIZE
-                + sizeOf(additionalPredicate, SizeOf::estimatedSizeOf);
+                + sizeOf(additionalPredicate, SizeOf::estimatedSizeOf)
+                + dynamicFilter.getRetainedSizeInBytes(JdbcColumnHandle::getRetainedSizeInBytes);
     }
 }

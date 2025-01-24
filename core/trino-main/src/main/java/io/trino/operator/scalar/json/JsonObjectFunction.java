@@ -21,14 +21,14 @@ import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.trino.annotation.UsedByGeneratedCode;
 import io.trino.json.ir.TypedValue;
-import io.trino.metadata.BoundSignature;
-import io.trino.metadata.FunctionMetadata;
-import io.trino.metadata.Signature;
 import io.trino.metadata.SqlScalarFunction;
-import io.trino.operator.scalar.ChoicesScalarFunctionImplementation;
-import io.trino.operator.scalar.ScalarFunctionImplementation;
+import io.trino.operator.scalar.ChoicesSpecializedSqlScalarFunction;
+import io.trino.operator.scalar.SpecializedSqlScalarFunction;
 import io.trino.spi.TrinoException;
-import io.trino.spi.block.Block;
+import io.trino.spi.block.SqlRow;
+import io.trino.spi.function.BoundSignature;
+import io.trino.spi.function.FunctionMetadata;
+import io.trino.spi.function.Signature;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeSignature;
@@ -36,7 +36,6 @@ import io.trino.type.Json2016Type;
 
 import java.lang.invoke.MethodHandle;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -59,14 +58,13 @@ public class JsonObjectFunction
 {
     public static final JsonObjectFunction JSON_OBJECT_FUNCTION = new JsonObjectFunction();
     public static final String JSON_OBJECT_FUNCTION_NAME = "$json_object";
-    private static final MethodHandle METHOD_HANDLE = methodHandle(JsonObjectFunction.class, "jsonObject", RowType.class, RowType.class, Block.class, Block.class, boolean.class, boolean.class);
+    private static final MethodHandle METHOD_HANDLE = methodHandle(JsonObjectFunction.class, "jsonObject", RowType.class, RowType.class, SqlRow.class, SqlRow.class, boolean.class, boolean.class);
     private static final JsonNode EMPTY_OBJECT = new ObjectNode(JsonNodeFactory.instance);
 
     private JsonObjectFunction()
     {
-        super(FunctionMetadata.scalarBuilder()
+        super(FunctionMetadata.scalarBuilder(JSON_OBJECT_FUNCTION_NAME)
                 .signature(Signature.builder()
-                        .name(JSON_OBJECT_FUNCTION_NAME)
                         .typeVariable("K")
                         .typeVariable("V")
                         .returnType(new TypeSignature(JSON_2016))
@@ -79,7 +77,7 @@ public class JsonObjectFunction
     }
 
     @Override
-    protected ScalarFunctionImplementation specialize(BoundSignature boundSignature)
+    protected SpecializedSqlScalarFunction specialize(BoundSignature boundSignature)
     {
         RowType keysRowType = (RowType) boundSignature.getArgumentType(0);
         RowType valuesRowType = (RowType) boundSignature.getArgumentType(1);
@@ -87,7 +85,7 @@ public class JsonObjectFunction
         MethodHandle methodHandle = METHOD_HANDLE
                 .bindTo(keysRowType)
                 .bindTo(valuesRowType);
-        return new ChoicesScalarFunctionImplementation(
+        return new ChoicesSpecializedSqlScalarFunction(
                 boundSignature,
                 FAIL_ON_NULL,
                 ImmutableList.of(BOXED_NULLABLE, BOXED_NULLABLE, NEVER_NULL, NEVER_NULL),
@@ -95,26 +93,26 @@ public class JsonObjectFunction
     }
 
     @UsedByGeneratedCode
-    public static JsonNode jsonObject(RowType keysRowType, RowType valuesRowType, Block keysRow, Block valuesRow, boolean nullOnNull, boolean uniqueKeys)
+    public static JsonNode jsonObject(RowType keysRowType, RowType valuesRowType, SqlRow keysRow, SqlRow valuesRow, boolean nullOnNull, boolean uniqueKeys)
     {
         if (JSON_NO_PARAMETERS_ROW_TYPE.equals(keysRowType)) {
             return EMPTY_OBJECT;
         }
 
         Map<String, JsonNode> members = new HashMap<>();
-        List<Block> keys = keysRow.getChildren();
-        List<Block> values = valuesRow.getChildren();
+        int keysRawIndex = keysRow.getRawIndex();
+        int valuesRawIndex = valuesRow.getRawIndex();
 
         for (int i = 0; i < keysRowType.getFields().size(); i++) {
             Type keyType = keysRowType.getFields().get(i).getType();
-            Object key = readNativeValue(keyType, keys.get(i), 0);
+            Object key = readNativeValue(keyType, keysRow.getRawFieldBlock(i), keysRawIndex);
             if (key == null) {
                 throw new TrinoException(INVALID_FUNCTION_ARGUMENT, "null value passed for JSON object key to JSON_OBJECT function");
             }
             String keyName = ((Slice) key).toStringUtf8();
 
             Type valueType = valuesRowType.getFields().get(i).getType();
-            Object value = readNativeValue(valueType, values.get(i), 0);
+            Object value = readNativeValue(valueType, valuesRow.getRawFieldBlock(i), valuesRawIndex);
             checkState(!JSON_ERROR.equals(value), "malformed JSON error suppressed in the input function");
 
             JsonNode valueNode;

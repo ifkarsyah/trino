@@ -23,12 +23,9 @@ import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.kafka.TestingKafka;
 import io.trino.testing.sql.TestTable;
-import io.trino.tpch.TpchTable;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
-import org.testng.SkipException;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
 import java.util.List;
@@ -37,7 +34,6 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Stream;
 
-import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.trino.plugin.kafka.encoder.json.format.DateTimeFormat.CUSTOM_DATE_TIME;
@@ -45,19 +41,20 @@ import static io.trino.plugin.kafka.encoder.json.format.DateTimeFormat.ISO8601;
 import static io.trino.plugin.kafka.encoder.json.format.DateTimeFormat.MILLISECONDS_SINCE_EPOCH;
 import static io.trino.plugin.kafka.encoder.json.format.DateTimeFormat.RFC2822;
 import static io.trino.plugin.kafka.encoder.json.format.DateTimeFormat.SECONDS_SINCE_EPOCH;
+import static io.trino.plugin.kafka.util.TestUtils.createDescription;
+import static io.trino.plugin.kafka.util.TestUtils.createFieldGroup;
+import static io.trino.plugin.kafka.util.TestUtils.createOneFieldDescription;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.DoubleType.DOUBLE;
-import static io.trino.spi.type.TimeType.TIME;
-import static io.trino.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
-import static io.trino.spi.type.TimestampType.TIMESTAMP;
-import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static io.trino.spi.type.TimeType.TIME_MILLIS;
+import static io.trino.spi.type.TimeWithTimeZoneType.TIME_TZ_MILLIS;
+import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
+import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS;
 import static io.trino.spi.type.VarcharType.createVarcharType;
-import static io.trino.testing.DataProviders.toDataProvider;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_CREATE_TABLE_WITH_DATA;
-import static io.trino.testing.assertions.Assert.assertEquals;
-import static io.trino.testing.sql.TestTable.randomTableSuffix;
+import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
@@ -67,8 +64,7 @@ import static org.apache.kafka.clients.producer.ProducerConfig.BOOTSTRAP_SERVERS
 import static org.apache.kafka.clients.producer.ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG;
 import static org.apache.kafka.clients.producer.ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertFalse;
+import static org.junit.jupiter.api.Assumptions.abort;
 
 public class TestKafkaConnectorTest
         extends BaseConnectorTest
@@ -83,19 +79,21 @@ public class TestKafkaConnectorTest
     private static final String JSON_SECONDS_TABLE_NAME = "seconds_since_epoch_table";
 
     // These tables must not be reused because the data will be modified during tests
-    private static final SchemaTableName TABLE_INSERT_NEGATIVE_DATE = new SchemaTableName("write_test", "test_insert_negative_date_" + randomTableSuffix());
-    private static final SchemaTableName TABLE_INSERT_CUSTOMER = new SchemaTableName("write_test", "test_insert_customer_" + randomTableSuffix());
-    private static final SchemaTableName TABLE_INSERT_ARRAY = new SchemaTableName("write_test", "test_insert_array_" + randomTableSuffix());
-    private static final SchemaTableName TABLE_INSERT_UNICODE_1 = new SchemaTableName("write_test", "test_unicode_1_" + randomTableSuffix());
-    private static final SchemaTableName TABLE_INSERT_UNICODE_2 = new SchemaTableName("write_test", "test_unicode_2_" + randomTableSuffix());
-    private static final SchemaTableName TABLE_INSERT_UNICODE_3 = new SchemaTableName("write_test", "test_unicode_3_" + randomTableSuffix());
-    private static final SchemaTableName TABLE_INSERT_HIGHEST_UNICODE = new SchemaTableName("write_test", "test_highest_unicode_" + randomTableSuffix());
+    private static final SchemaTableName TABLE_INSERT_NEGATIVE_DATE = new SchemaTableName("write_test", "test_insert_negative_date_" + randomNameSuffix());
+    private static final SchemaTableName TABLE_INSERT_CUSTOMER = new SchemaTableName("write_test", "test_insert_customer_" + randomNameSuffix());
+    private static final SchemaTableName TABLE_INSERT_ARRAY = new SchemaTableName("write_test", "test_insert_array_" + randomNameSuffix());
+    private static final SchemaTableName TABLE_INSERT_UNICODE_1 = new SchemaTableName("write_test", "test_unicode_1_" + randomNameSuffix());
+    private static final SchemaTableName TABLE_INSERT_UNICODE_2 = new SchemaTableName("write_test", "test_unicode_2_" + randomNameSuffix());
+    private static final SchemaTableName TABLE_INSERT_UNICODE_3 = new SchemaTableName("write_test", "test_unicode_3_" + randomNameSuffix());
+    private static final SchemaTableName TABLE_INSERT_HIGHEST_UNICODE = new SchemaTableName("write_test", "test_highest_unicode_" + randomNameSuffix());
+    private static final SchemaTableName TABLE_INTERNAL_FIELD_PREFIX = new SchemaTableName("write_test", "test_internal_fields_prefix_" + randomNameSuffix());
 
     @Override
     protected QueryRunner createQueryRunner()
             throws Exception
     {
         testingKafka = closeAfterClass(TestingKafka.create());
+        testingKafka.start();
         rawFormatTopic = "test_raw_" + UUID.randomUUID().toString().replaceAll("-", "_");
         headersTopic = "test_header_" + UUID.randomUUID().toString().replaceAll("-", "_");
 
@@ -145,10 +143,14 @@ public class TestKafkaConnectorTest
                         TABLE_INSERT_HIGHEST_UNICODE,
                         createOneFieldDescription("key", BIGINT),
                         ImmutableList.of(createOneFieldDescription("test", createVarcharType(50)))))
+                .put(TABLE_INTERNAL_FIELD_PREFIX, createDescription(
+                        TABLE_INTERNAL_FIELD_PREFIX,
+                        createOneFieldDescription("_key", createVarcharType(15)),
+                        ImmutableList.of(createOneFieldDescription("custkey", BIGINT), createOneFieldDescription("acctbal", DOUBLE))))
                 .buildOrThrow();
 
         QueryRunner queryRunner = KafkaQueryRunner.builder(testingKafka)
-                .setTables(TpchTable.getTables())
+                .setTables(REQUIRED_TPCH_TABLES)
                 .setExtraTopicDescription(extraTopicDescriptions)
                 .build();
 
@@ -158,28 +160,40 @@ public class TestKafkaConnectorTest
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_ADD_COLUMN:
-            case SUPPORTS_DROP_COLUMN:
-            case SUPPORTS_CREATE_SCHEMA:
-            case SUPPORTS_CREATE_TABLE:
-            case SUPPORTS_CREATE_TABLE_WITH_DATA:
-            case SUPPORTS_DELETE:
-            case SUPPORTS_COMMENT_ON_TABLE:
-            case SUPPORTS_COMMENT_ON_COLUMN:
-            case SUPPORTS_RENAME_TABLE:
-            case SUPPORTS_RENAME_COLUMN:
-            case SUPPORTS_TOPN_PUSHDOWN:
-                return false;
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+        return switch (connectorBehavior) {
+            case SUPPORTS_ADD_COLUMN,
+                 SUPPORTS_COMMENT_ON_COLUMN,
+                 SUPPORTS_COMMENT_ON_TABLE,
+                 SUPPORTS_CREATE_MATERIALIZED_VIEW,
+                 SUPPORTS_CREATE_SCHEMA,
+                 SUPPORTS_CREATE_TABLE,
+                 SUPPORTS_CREATE_VIEW,
+                 SUPPORTS_DELETE,
+                 SUPPORTS_DEREFERENCE_PUSHDOWN,
+                 SUPPORTS_MERGE,
+                 SUPPORTS_RENAME_COLUMN,
+                 SUPPORTS_RENAME_TABLE,
+                 SUPPORTS_SET_COLUMN_TYPE,
+                 SUPPORTS_TOPN_PUSHDOWN,
+                 SUPPORTS_UPDATE -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
+    }
+
+    @Test
+    public void testInternalFieldPrefix()
+    {
+        assertQueryFails("SELECT count(*) FROM " + TABLE_INTERNAL_FIELD_PREFIX, ""
+                + "Internal Kafka column names conflict with column names from the table. "
+                + "Consider changing kafka.internal-column-prefix configuration property. "
+                + "topic=" + TABLE_INTERNAL_FIELD_PREFIX
+                + ", Conflicting names=\\[_key]");
     }
 
     @Override
     protected TestTable createTableWithDefaultColumns()
     {
-        throw new SkipException("Kafka connector does not support column default values");
+        return abort("Kafka connector does not support column default values");
     }
 
     @Test
@@ -363,7 +377,7 @@ public class TestKafkaConnectorTest
     public void testInsert()
     {
         // Override because the base test uses CREATE TABLE AS SELECT statement that is unsupported in Kafka connector
-        assertFalse(hasBehavior(SUPPORTS_CREATE_TABLE_WITH_DATA));
+        assertThat(hasBehavior(SUPPORTS_CREATE_TABLE_WITH_DATA)).isFalse();
 
         String query = "SELECT phone, custkey, acctbal FROM customer";
 
@@ -413,9 +427,9 @@ public class TestKafkaConnectorTest
     public void testInsertArray()
     {
         // Override because the base test uses CREATE TABLE statement that is unsupported in Kafka connector
-        assertThatThrownBy(() -> query("INSERT INTO " + TABLE_INSERT_ARRAY + " (a) VALUES (ARRAY[null])"))
-                .hasMessage("Unsupported column type 'array(double)' for column 'a'");
-        throw new SkipException("not supported");
+        assertThat(query("INSERT INTO " + TABLE_INSERT_ARRAY + " (a) VALUES (ARRAY[null])"))
+                .failure().hasMessage("Unsupported column type 'array(double)' for column 'a'");
+        abort("not supported");
     }
 
     @Test
@@ -452,51 +466,11 @@ public class TestKafkaConnectorTest
                 .containsExactlyInAnyOrder("Hello", "hello测试􏿿world编码");
     }
 
+    @Test
     @Override
     public void testInsertRowConcurrently()
     {
-        throw new SkipException("TODO Prepare a topic in Kafka and enable this test");
-    }
-
-    private static KafkaTopicDescription createDescription(SchemaTableName schemaTableName, KafkaTopicFieldDescription key, List<KafkaTopicFieldDescription> fields)
-    {
-        return new KafkaTopicDescription(
-                schemaTableName.getTableName(),
-                Optional.of(schemaTableName.getSchemaName()),
-                schemaTableName.getTableName(),
-                Optional.of(new KafkaTopicFieldGroup("json", Optional.empty(), Optional.empty(), ImmutableList.of(key))),
-                Optional.of(new KafkaTopicFieldGroup("json", Optional.empty(), Optional.empty(), fields)));
-    }
-
-    private static KafkaTopicDescription createDescription(String name, String schema, String topic, Optional<KafkaTopicFieldGroup> message)
-    {
-        return new KafkaTopicDescription(name, Optional.of(schema), topic, Optional.empty(), message);
-    }
-
-    private static Optional<KafkaTopicFieldGroup> createFieldGroup(String dataFormat, List<KafkaTopicFieldDescription> fields)
-    {
-        return Optional.of(new KafkaTopicFieldGroup(dataFormat, Optional.empty(), Optional.empty(), fields));
-    }
-
-    private static KafkaTopicFieldDescription createOneFieldDescription(String name, Type type)
-    {
-        return new KafkaTopicFieldDescription(name, type, name, null, null, null, false);
-    }
-
-    private static KafkaTopicFieldDescription createOneFieldDescription(String name, Type type, String dataFormat)
-    {
-        return new KafkaTopicFieldDescription(name, type, name, null, dataFormat, null, false);
-    }
-
-    private static KafkaTopicFieldDescription createOneFieldDescription(String name, Type type, String dataFormat, Optional<String> formatHint)
-    {
-        return formatHint.map(s -> new KafkaTopicFieldDescription(name, type, name, null, dataFormat, s, false))
-                .orElseGet(() -> new KafkaTopicFieldDescription(name, type, name, null, dataFormat, null, false));
-    }
-
-    private static KafkaTopicFieldDescription createOneFieldDescription(String name, Type type, String mapping, String dataFormat)
-    {
-        return new KafkaTopicFieldDescription(name, type, mapping, null, dataFormat, null, false);
+        abort("TODO Prepare a topic in Kafka and enable this test");
     }
 
     @Test
@@ -516,29 +490,26 @@ public class TestKafkaConnectorTest
                 "VALUES ('bar'), (null), ('baz')");
     }
 
-    @Test(dataProvider = "jsonDateTimeFormatsDataProvider")
-    public void testJsonDateTimeFormatsRoundTrip(JsonDateTimeTestCase testCase)
+    @Test
+    public void testJsonDateTimeFormatsRoundTrip()
     {
-        assertUpdate("INSERT into write_test." + testCase.getTopicName() +
-                " (" + testCase.getFieldNames() + ")" +
-                " VALUES " + testCase.getFieldValues(), 1);
-        for (JsonDateTimeTestCase.Field field : testCase.getFields()) {
-            Object actual = computeScalar("SELECT " + field.getFieldName() + " FROM write_test." + testCase.getTopicName());
-            Object expected = computeScalar("SELECT " + field.getFieldValue());
-            try {
-                assertEquals(actual, expected, "Equality assertion failed for field: " + field.getFieldName());
-            }
-            catch (AssertionError e) {
-                throw new AssertionError(format("Equality assertion failed for field '%s'\n%s", field.getFieldName(), e.getMessage()), e);
+        for (JsonDateTimeTestCase testCase : jsonDateTimeFormatsData()) {
+            assertUpdate("INSERT into write_test." + testCase.getTopicName() +
+                    " (" + testCase.getFieldNames() + ")" +
+                    " VALUES " + testCase.getFieldValues(), 1);
+            for (JsonDateTimeTestCase.Field field : testCase.getFields()) {
+                Object actual = computeScalar("SELECT " + field.getFieldName() + " FROM write_test." + testCase.getTopicName());
+                Object expected = computeScalar("SELECT " + field.getFieldValue());
+                try {
+                    assertThat(actual)
+                            .describedAs("Equality assertion failed for field: " + field.getFieldName())
+                            .isEqualTo(expected);
+                }
+                catch (AssertionError e) {
+                    throw new AssertionError(format("Equality assertion failed for field '%s'\n%s", field.getFieldName(), e.getMessage()), e);
+                }
             }
         }
-    }
-
-    @DataProvider
-    public static Object[][] jsonDateTimeFormatsDataProvider()
-    {
-        return jsonDateTimeFormatsData().stream()
-                .collect(toDataProvider());
     }
 
     private static List<JsonDateTimeTestCase> jsonDateTimeFormatsData()
@@ -547,33 +518,33 @@ public class TestKafkaConnectorTest
                 .add(JsonDateTimeTestCase.builder()
                         .setTopicName(JSON_CUSTOM_DATE_TIME_TABLE_NAME)
                         .addField(DATE, CUSTOM_DATE_TIME.toString(), "yyyy-MM-dd", "DATE '2020-07-15'")
-                        .addField(TIME, CUSTOM_DATE_TIME.toString(), "HH:mm:ss.SSS", "TIME '01:02:03.456'")
-                        .addField(TIME_WITH_TIME_ZONE, CUSTOM_DATE_TIME.toString(), "HH:mm:ss.SSS Z", "TIME '01:02:03.456 -04:00'")
-                        .addField(TIMESTAMP, CUSTOM_DATE_TIME.toString(), "yyyy-dd-MM HH:mm:ss.SSS", "TIMESTAMP '2020-07-15 01:02:03.456'")
-                        .addField(TIMESTAMP_WITH_TIME_ZONE, CUSTOM_DATE_TIME.toString(), "yyyy-dd-MM HH:mm:ss.SSS Z", "TIMESTAMP '2020-07-15 01:02:03.456 -04:00'")
+                        .addField(TIME_MILLIS, CUSTOM_DATE_TIME.toString(), "HH:mm:ss.SSS", "TIME '01:02:03.456'")
+                        .addField(TIME_TZ_MILLIS, CUSTOM_DATE_TIME.toString(), "HH:mm:ss.SSS Z", "TIME '01:02:03.456 -04:00'")
+                        .addField(TIMESTAMP_MILLIS, CUSTOM_DATE_TIME.toString(), "yyyy-dd-MM HH:mm:ss.SSS", "TIMESTAMP '2020-07-15 01:02:03.456'")
+                        .addField(TIMESTAMP_TZ_MILLIS, CUSTOM_DATE_TIME.toString(), "yyyy-dd-MM HH:mm:ss.SSS Z", "TIMESTAMP '2020-07-15 01:02:03.456 -04:00'")
                         .build())
                 .add(JsonDateTimeTestCase.builder()
                         .setTopicName(JSON_ISO8601_TABLE_NAME)
                         .addField(DATE, ISO8601.toString(), "DATE '2020-07-15'")
-                        .addField(TIME, ISO8601.toString(), "TIME '01:02:03.456'")
-                        .addField(TIME_WITH_TIME_ZONE, ISO8601.toString(), "TIME '01:02:03.456 -04:00'")
-                        .addField(TIMESTAMP, ISO8601.toString(), "TIMESTAMP '2020-07-15 01:02:03.456'")
-                        .addField(TIMESTAMP_WITH_TIME_ZONE, ISO8601.toString(), "TIMESTAMP '2020-07-15 01:02:03.456 -04:00'")
+                        .addField(TIME_MILLIS, ISO8601.toString(), "TIME '01:02:03.456'")
+                        .addField(TIME_TZ_MILLIS, ISO8601.toString(), "TIME '01:02:03.456 -04:00'")
+                        .addField(TIMESTAMP_MILLIS, ISO8601.toString(), "TIMESTAMP '2020-07-15 01:02:03.456'")
+                        .addField(TIMESTAMP_TZ_MILLIS, ISO8601.toString(), "TIMESTAMP '2020-07-15 01:02:03.456 -04:00'")
                         .build())
                 .add(JsonDateTimeTestCase.builder()
                         .setTopicName(JSON_RFC2822_TABLE_NAME)
-                        .addField(TIMESTAMP, RFC2822.toString(), "TIMESTAMP '2020-07-15 01:02:03'")
-                        .addField(TIMESTAMP_WITH_TIME_ZONE, RFC2822.toString(), "TIMESTAMP '2020-07-15 01:02:03 -04:00'")
+                        .addField(TIMESTAMP_MILLIS, RFC2822.toString(), "TIMESTAMP '2020-07-15 01:02:03'")
+                        .addField(TIMESTAMP_TZ_MILLIS, RFC2822.toString(), "TIMESTAMP '2020-07-15 01:02:03 -04:00'")
                         .build())
                 .add(JsonDateTimeTestCase.builder()
                         .setTopicName(JSON_MILLISECONDS_TABLE_NAME)
-                        .addField(TIME, MILLISECONDS_SINCE_EPOCH.toString(), "TIME '01:02:03.456'")
-                        .addField(TIMESTAMP, MILLISECONDS_SINCE_EPOCH.toString(), "TIMESTAMP '2020-07-15 01:02:03.456'")
+                        .addField(TIME_MILLIS, MILLISECONDS_SINCE_EPOCH.toString(), "TIME '01:02:03.456'")
+                        .addField(TIMESTAMP_MILLIS, MILLISECONDS_SINCE_EPOCH.toString(), "TIMESTAMP '2020-07-15 01:02:03.456'")
                         .build())
                 .add(JsonDateTimeTestCase.builder()
                         .setTopicName(JSON_SECONDS_TABLE_NAME)
-                        .addField(TIME, SECONDS_SINCE_EPOCH.toString(), "TIME '01:02:03'")
-                        .addField(TIMESTAMP, SECONDS_SINCE_EPOCH.toString(), "TIMESTAMP '2020-07-15 01:02:03'")
+                        .addField(TIME_MILLIS, SECONDS_SINCE_EPOCH.toString(), "TIME '01:02:03'")
+                        .addField(TIMESTAMP_MILLIS, SECONDS_SINCE_EPOCH.toString(), "TIMESTAMP '2020-07-15 01:02:03'")
                         .build())
                 .build();
     }
@@ -719,100 +690,53 @@ public class TestKafkaConnectorTest
         }
     }
 
-    @Test(dataProvider = "roundTripAllFormatsDataProvider")
-    public void testRoundTripAllFormats(RoundTripTestCase testCase)
+    @Test
+    public void testRoundTripAllFormats()
     {
-        assertUpdate("INSERT into write_test." + testCase.getTableName() +
-                " (" + testCase.getFieldNames() + ")" +
-                " VALUES " + testCase.getRowValues(), testCase.getNumRows());
-        assertQuery("SELECT " + testCase.getFieldNames() + " FROM write_test." + testCase.getTableName() +
-                        " WHERE f_bigint > 1",
-                "VALUES " + testCase.getRowValues());
+        testRoundTripAllFormats(
+                "all_datatypes_avro",
+                ImmutableList.of("f_bigint", "f_float", "f_double", "f_boolean", "f_varchar"),
+                ImmutableList.of(
+                        ImmutableList.of(100000, 999.999f, 1000.001, true, "'test'"),
+                        ImmutableList.of(123456, -123.456f, 1234.123, false, "'abcd'")));
+
+        testRoundTripAllFormats(
+                "all_datatypes_csv",
+                ImmutableList.of("f_bigint", "f_int", "f_smallint", "f_tinyint", "f_double", "f_boolean", "f_varchar"),
+                ImmutableList.of(
+                        ImmutableList.of(100000, 1000, 100, 10, 1000.001, true, "'test'"),
+                        ImmutableList.of(123456, 1234, 123, 12, 12345.123, false, "'abcd'")));
+
+        testRoundTripAllFormats(
+                "all_datatypes_raw",
+                ImmutableList.of("kafka_key", "f_varchar", "f_bigint", "f_int", "f_smallint", "f_tinyint", "f_double", "f_boolean"),
+                ImmutableList.of(
+                        ImmutableList.of(1, "'test'", 100000, 1000, 100, 10, 1000.001, true),
+                        ImmutableList.of(1, "'abcd'", 123456, 1234, 123, 12, 12345.123, false)));
+
+        testRoundTripAllFormats(
+                "all_datatypes_json",
+                ImmutableList.of("f_bigint", "f_int", "f_smallint", "f_tinyint", "f_double", "f_boolean", "f_varchar"),
+                ImmutableList.of(
+                        ImmutableList.of(100000, 1000, 100, 10, 1000.001, true, "'test'"),
+                        ImmutableList.of(123748, 1234, 123, 12, 12345.123, false, "'abcd'")));
     }
 
-    @DataProvider
-    public static Object[][] roundTripAllFormatsDataProvider()
+    public void testRoundTripAllFormats(String tableName, List<String> fieldNames, List<List<Object>> rowValues)
     {
-        return roundTripAllFormatsData().stream()
-                .collect(toDataProvider());
-    }
+        String rows = rowValues.stream()
+                .map(row -> row.stream()
+                        .map(Object::toString)
+                        .collect(joining(", ", "(", ")")))
+                .collect(joining(", "));
+        String fields = String.join(",", fieldNames);
 
-    private static List<RoundTripTestCase> roundTripAllFormatsData()
-    {
-        return ImmutableList.<RoundTripTestCase>builder()
-                .add(new RoundTripTestCase(
-                        "all_datatypes_avro",
-                        ImmutableList.of("f_bigint", "f_float", "f_double", "f_boolean", "f_varchar"),
-                        ImmutableList.of(
-                                ImmutableList.of(100000, 999.999f, 1000.001, true, "'test'"),
-                                ImmutableList.of(123456, -123.456f, 1234.123, false, "'abcd'"))))
-                .add(new RoundTripTestCase(
-                        "all_datatypes_csv",
-                        ImmutableList.of("f_bigint", "f_int", "f_smallint", "f_tinyint", "f_double", "f_boolean", "f_varchar"),
-                        ImmutableList.of(
-                                ImmutableList.of(100000, 1000, 100, 10, 1000.001, true, "'test'"),
-                                ImmutableList.of(123456, 1234, 123, 12, 12345.123, false, "'abcd'"))))
-                .add(new RoundTripTestCase(
-                        "all_datatypes_raw",
-                        ImmutableList.of("kafka_key", "f_varchar", "f_bigint", "f_int", "f_smallint", "f_tinyint", "f_double", "f_boolean"),
-                        ImmutableList.of(
-                                ImmutableList.of(1, "'test'", 100000, 1000, 100, 10, 1000.001, true),
-                                ImmutableList.of(1, "'abcd'", 123456, 1234, 123, 12, 12345.123, false))))
-                .add(new RoundTripTestCase(
-                        "all_datatypes_json",
-                        ImmutableList.of("f_bigint", "f_int", "f_smallint", "f_tinyint", "f_double", "f_boolean", "f_varchar"),
-                        ImmutableList.of(
-                                ImmutableList.of(100000, 1000, 100, 10, 1000.001, true, "'test'"),
-                                ImmutableList.of(123748, 1234, 123, 12, 12345.123, false, "'abcd'"))))
-                .build();
-    }
+        assertUpdate(
+                "INSERT into write_test." + tableName + " (" + fields + ") VALUES " + rows,
+                rowValues.size());
 
-    private static final class RoundTripTestCase
-    {
-        private final String tableName;
-        private final List<String> fieldNames;
-        private final List<List<Object>> rowValues;
-        private final int numRows;
-
-        public RoundTripTestCase(String tableName, List<String> fieldNames, List<List<Object>> rowValues)
-        {
-            for (List<Object> row : rowValues) {
-                checkArgument(fieldNames.size() == row.size(), "sizes of fieldNames and rowValues are not equal");
-            }
-            this.tableName = requireNonNull(tableName, "tableName is null");
-            this.fieldNames = ImmutableList.copyOf(fieldNames);
-            this.rowValues = ImmutableList.copyOf(rowValues);
-            this.numRows = this.rowValues.size();
-        }
-
-        public String getTableName()
-        {
-            return tableName;
-        }
-
-        public String getFieldNames()
-        {
-            return String.join(", ", fieldNames);
-        }
-
-        public String getRowValues()
-        {
-            String[] rows = new String[numRows];
-            for (int i = 0; i < numRows; i++) {
-                rows[i] = rowValues.get(i).stream().map(Object::toString).collect(joining(", ", "(", ")"));
-            }
-            return String.join(", ", rows);
-        }
-
-        public int getNumRows()
-        {
-            return numRows;
-        }
-
-        @Override
-        public String toString()
-        {
-            return tableName; // for test case label in IDE
-        }
+        assertQuery(
+                "SELECT " + fields + " FROM write_test." + tableName + " WHERE f_bigint > 1",
+                "VALUES " + rows);
     }
 }

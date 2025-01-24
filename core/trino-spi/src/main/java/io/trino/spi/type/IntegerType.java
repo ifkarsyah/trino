@@ -37,13 +37,35 @@ public final class IntegerType
             return null;
         }
 
-        return block.getInt(position, 0);
+        return getInt(block, position);
     }
 
     @Override
     public Optional<Range> getRange()
     {
         return Optional.of(new Range((long) Integer.MIN_VALUE, (long) Integer.MAX_VALUE));
+    }
+
+    @Override
+    public Optional<Object> getPreviousValue(Object object)
+    {
+        long value = (long) object;
+        checkValueValid(value);
+        if (value == Integer.MIN_VALUE) {
+            return Optional.empty();
+        }
+        return Optional.of(value - 1);
+    }
+
+    @Override
+    public Optional<Object> getNextValue(Object object)
+    {
+        long value = (long) object;
+        checkValueValid(value);
+        if (value == Integer.MAX_VALUE) {
+            return Optional.empty();
+        }
+        return Optional.of(value + 1);
     }
 
     @Override

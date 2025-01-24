@@ -81,19 +81,19 @@ public final class DomainCoercer
                 Domain domain,
                 Type coercedValueType)
         {
-            this.connectorSession = requireNonNull(session, "session is null").toConnectorSession();
+            this.connectorSession = session.toConnectorSession();
             this.functionInvoker = new InterpretedFunctionInvoker(functionManager);
             this.domain = requireNonNull(domain, "domain is null");
             this.coercedValueType = requireNonNull(coercedValueType, "coercedValueType is null");
             Type originalValueType = domain.getType();
             try {
-                this.saturatedFloorCastOperator = metadata.getCoercion(session, SATURATED_FLOOR_CAST, originalValueType, coercedValueType);
+                this.saturatedFloorCastOperator = metadata.getCoercion(SATURATED_FLOOR_CAST, originalValueType, coercedValueType);
             }
             catch (OperatorNotFoundException e) {
                 throw new IllegalStateException(
                         format("Saturated floor cast operator not found for coercion from %s to %s", originalValueType, coercedValueType));
             }
-            this.castToOriginalTypeOperator = metadata.getCoercion(session, coercedValueType, originalValueType);
+            this.castToOriginalTypeOperator = metadata.getCoercion(coercedValueType, originalValueType);
             // choice of placing unordered values first or last does not matter for this code
             this.comparisonOperator = typeOperators.getComparisonUnorderedLastOperator(originalValueType, InvocationConvention.simpleConvention(FAIL_ON_NULL, NEVER_NULL, NEVER_NULL));
         }
@@ -211,9 +211,7 @@ public final class DomainCoercer
             if (originalComparedToCoerced == 0) {
                 return Optional.of(coercedFloorValue);
             }
-            else {
-                return Optional.empty();
-            }
+            return Optional.empty();
         }
 
         private int compareOriginalValueToCoerced(ResolvedFunction castToOriginalTypeOperator, MethodHandle comparisonOperator, Object originalValue, Object coercedValue)

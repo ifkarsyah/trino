@@ -14,7 +14,7 @@
 package io.trino.plugin.hive.metastore;
 
 import com.google.common.collect.ImmutableMap;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
@@ -34,9 +34,7 @@ public class TestHiveMetastoreConfig
     @Test
     public void testExplicitPropertyMappings()
     {
-        Map<String, String> properties = ImmutableMap.<String, String>builder()
-                .put("hive.hide-delta-lake-tables", "true")
-                .buildOrThrow();
+        Map<String, String> properties = ImmutableMap.of("hive.hide-delta-lake-tables", "true");
 
         HiveMetastoreConfig expected = new HiveMetastoreConfig()
                 .setHideDeltaLakeTables(true);

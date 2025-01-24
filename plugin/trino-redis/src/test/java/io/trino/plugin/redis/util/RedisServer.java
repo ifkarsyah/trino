@@ -22,7 +22,7 @@ import java.io.Closeable;
 public class RedisServer
         implements Closeable
 {
-    public static final String DEFAULT_VERSION = "2.8.9";
+    public static final String DEFAULT_VERSION = "5.0.14";
     public static final String LATEST_VERSION = "7.0.0";
     private static final int PORT = 6379;
 
@@ -44,12 +44,12 @@ public class RedisServer
         if (setAccessControl) {
             container.withCommand("redis-server", "--requirepass", PASSWORD);
             container.start();
-            jedisPool = new JedisPool(container.getContainerIpAddress(), container.getMappedPort(PORT), null, PASSWORD);
+            jedisPool = new JedisPool(container.getHost(), container.getMappedPort(PORT), null, PASSWORD);
             jedisPool.getResource().aclSetUser(USER, "on", ">" + PASSWORD, "~*:*", "+@all");
         }
         else {
             container.start();
-            jedisPool = new JedisPool(container.getContainerIpAddress(), container.getMappedPort(PORT));
+            jedisPool = new JedisPool(container.getHost(), container.getMappedPort(PORT));
         }
     }
 
@@ -65,7 +65,7 @@ public class RedisServer
 
     public HostAndPort getHostAndPort()
     {
-        return HostAndPort.fromParts(container.getContainerIpAddress(), container.getMappedPort(PORT));
+        return HostAndPort.fromParts(container.getHost(), container.getMappedPort(PORT));
     }
 
     @Override

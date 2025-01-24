@@ -20,10 +20,7 @@ import io.trino.testing.MaterializedRow;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.sql.TestTable;
 import org.assertj.core.api.AbstractDoubleAssert;
-import org.jdbi.v3.core.Handle;
-import org.jdbi.v3.core.Jdbi;
-import org.testng.SkipException;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.List;
@@ -35,18 +32,15 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Streams.stream;
-import static io.trino.plugin.mysql.MySqlQueryRunner.createMySqlQueryRunner;
+import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.testing.sql.TestTable.fromColumns;
-import static io.trino.testing.sql.TestTable.randomTableSuffix;
 import static io.trino.tpch.TpchTable.ORDERS;
 import static java.lang.Math.min;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.withinPercentage;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNotNull;
-import static org.testng.Assert.assertNull;
+import static org.junit.jupiter.api.Assumptions.abort;
 
 public abstract class BaseTestMySqlTableStatisticsTest
         extends BaseJdbcTableStatisticsTest
@@ -72,18 +66,17 @@ public abstract class BaseTestMySqlTableStatisticsTest
     {
         mysqlServer = closeAfterClass(new TestingMySqlServer(dockerImageName, false));
 
-        return createMySqlQueryRunner(
-                mysqlServer,
-                Map.of(),
-                Map.of("case-insensitive-name-matching", "true"),
-                List.of(ORDERS));
+        return MySqlQueryRunner.builder(mysqlServer)
+                .addConnectorProperties(Map.of("case-insensitive-name-matching", "true"))
+                .setInitialTables(List.of(ORDERS))
+                .build();
     }
 
     @Override
     @Test
     public void testNotAnalyzed()
     {
-        String tableName = "test_not_analyzed_" + randomTableSuffix();
+        String tableName = "test_not_analyzed_" + randomNameSuffix();
         assertUpdate("DROP TABLE IF EXISTS " + tableName);
         computeActual(format("CREATE TABLE %s AS SELECT * FROM tpch.tiny.orders", tableName));
         try {
@@ -115,7 +108,7 @@ public abstract class BaseTestMySqlTableStatisticsTest
     @Test
     public void testBasic()
     {
-        String tableName = "test_stats_orders_" + randomTableSuffix();
+        String tableName = "test_stats_orders_" + randomNameSuffix();
         assertUpdate("DROP TABLE IF EXISTS " + tableName);
         computeActual(format("CREATE TABLE %s AS SELECT * FROM tpch.tiny.orders", tableName));
         try {
@@ -143,7 +136,7 @@ public abstract class BaseTestMySqlTableStatisticsTest
     @Test
     public void testAllNulls()
     {
-        String tableName = "test_stats_table_all_nulls_" + randomTableSuffix();
+        String tableName = "test_stats_table_all_nulls_" + randomNameSuffix();
         assertUpdate("DROP TABLE IF EXISTS " + tableName);
         computeActual(format("CREATE TABLE %s AS SELECT orderkey, custkey, orderpriority, comment FROM tpch.tiny.orders WHERE false", tableName));
         try {
@@ -165,17 +158,29 @@ public abstract class BaseTestMySqlTableStatisticsTest
                 }
 
                 if ((columnName.equals("orderpriority") || columnName.equals("comment")) && varcharNdvToExpected.apply(2) == null) {
-                    assertNull(row.getField(2), "NDV for " + columnName);
-                    assertNull(row.getField(3), "null fraction for " + columnName);
+                    assertThat(row.getField(2))
+                            .describedAs("NDV for " + columnName)
+                            .isNull();
+                    assertThat(row.getField(3))
+                            .describedAs("null fraction for " + columnName)
+                            .isNull();
                 }
                 else {
-                    assertNotNull(row.getField(2), "NDV for " + columnName);
-                    assertThat(((Number) row.getField(2)).doubleValue()).as("NDV for " + columnName).isBetween(0.0, 2.0);
-                    assertEquals(row.getField(3), nullFractionToExpected.apply(1.0), "null fraction for " + columnName);
+                    assertThat(row.getField(2))
+                            .describedAs("NDV for " + columnName)
+                            .isNotNull();
+                    assertThat((Double) row.getField(2)).as("NDV for " + columnName).isBetween(0.0, 2.0);
+                    assertThat(row.getField(3))
+                            .describedAs("null fraction for " + columnName)
+                            .isEqualTo(nullFractionToExpected.apply(1.0));
                 }
 
-                assertNull(row.getField(4), "min");
-                assertNull(row.getField(5), "max");
+                assertThat(row.getField(4))
+                        .describedAs("min")
+                        .isNull();
+                assertThat(row.getField(5))
+                        .describedAs("max")
+                        .isNull();
             }
             double cardinality = getTableCardinalityFromStats(statsResult);
             if (cardinality != 15.0) {
@@ -192,7 +197,7 @@ public abstract class BaseTestMySqlTableStatisticsTest
     @Test
     public void testNullsFraction()
     {
-        String tableName = "test_stats_table_with_nulls_" + randomTableSuffix();
+        String tableName = "test_stats_table_with_nulls_" + randomNameSuffix();
         assertUpdate("DROP TABLE IF EXISTS " + tableName);
         assertUpdate("" +
                         "CREATE TABLE " + tableName + " AS " +
@@ -228,21 +233,21 @@ public abstract class BaseTestMySqlTableStatisticsTest
     @Test
     public void testAverageColumnLength()
     {
-        throw new SkipException("MySQL connector does not report average column length");
+        abort("MySQL connector does not report average column length");
     }
 
     @Override
     @Test
     public void testPartitionedTable()
     {
-        throw new SkipException("Not implemented"); // TODO
+        abort("Not implemented"); // TODO
     }
 
     @Override
     @Test
     public void testView()
     {
-        String tableName = "test_stats_view_" + randomTableSuffix();
+        String tableName = "test_stats_view_" + randomNameSuffix();
         executeInMysql("CREATE OR REPLACE VIEW " + tableName + " AS SELECT orderkey, custkey, orderpriority, comment FROM orders");
         try {
             assertQuery(
@@ -264,12 +269,11 @@ public abstract class BaseTestMySqlTableStatisticsTest
     @Test
     public void testMaterializedView()
     {
-        throw new SkipException(""); // TODO is there a concept like materialized view in MySQL?
+        abort(""); // TODO is there a concept like materialized view in MySQL?
     }
 
     @Override
-    @Test(dataProvider = "testCaseColumnNamesDataProvider")
-    public void testCaseColumnNames(String tableName)
+    protected void testCaseColumnNames(String tableName)
     {
         executeInMysql(("" +
                 "CREATE TABLE " + tableName + " " +
@@ -335,22 +339,19 @@ public abstract class BaseTestMySqlTableStatisticsTest
 //                            "('mixed_infinities_and_numbers', null, 4.0, 0.0, null, null, null)," +
 //                            "('nans_only', null, 1.0, 0.5, null, null, null)," +
 //                            "('nans_and_numbers', null, 3.0, 0.0, null, null, null)," +
-                            "('large_doubles', null, 1.9, 0.050000000000000044, null, null, null)," +
-                            "('short_decimals_big_fraction', null, 1.9, 0.050000000000000044, null, null, null)," +
-                            "('short_decimals_big_integral', null, 1.9, 0.050000000000000044, null, null, null)," +
-                            "('long_decimals_big_fraction', null, 1.9, 0.050000000000000044, null, null, null)," +
-                            "('long_decimals_middle', null, 1.9, 0.050000000000000044, null, null, null)," +
-                            "('long_decimals_big_integral', null, 1.9, 0.050000000000000044, null, null, null)," +
+                            "('large_doubles', null, 2.0, 0.0, null, null, null)," +
+                            "('short_decimals_big_fraction', null, 2.0, 0.0, null, null, null)," +
+                            "('short_decimals_big_integral', null, 2.0, 0.0, null, null, null)," +
+                            "('long_decimals_big_fraction', null, 2.0, 0.0, null, null, null)," +
+                            "('long_decimals_middle', null, 2.0, 0.0, null, null, null)," +
+                            "('long_decimals_big_integral', null, 2.0, 0.0, null, null, null)," +
                             "(null, null, null, null, 2, null, null)");
         }
     }
 
     protected void executeInMysql(String sql)
     {
-        try (Handle handle = Jdbi.open(() -> mysqlServer.createConnection())) {
-            handle.execute("USE tpch");
-            handle.execute(sql);
-        }
+        mysqlServer.execute(sql);
     }
 
     protected void assertColumnStats(MaterializedResult statsResult, Map<String, Integer> columnNdvs)
@@ -368,7 +369,8 @@ public abstract class BaseTestMySqlTableStatisticsTest
 
     protected void assertColumnStats(MaterializedResult statsResult, Map<String, Integer> columnNdvs, Map<String, Double> columnNullFractions)
     {
-        assertEquals(columnNdvs.keySet(), columnNullFractions.keySet());
+        assertThat(columnNdvs.keySet())
+                .isEqualTo(columnNullFractions.keySet());
         List<String> reportedColumns = stream(statsResult)
                 .map(row -> row.getField(0)) // column name
                 .filter(Objects::nonNull)
@@ -394,34 +396,50 @@ public abstract class BaseTestMySqlTableStatisticsTest
                         .isEqualTo(0);
             }
 
-            AbstractDoubleAssert<?> ndvAssertion = assertThat((Double) row.getField(2)).as("NDV for " + columnName);
+            Double distinctCount = (Double) row.getField(2);
+            Double nullsFraction = (Double) row.getField(3);
+            AbstractDoubleAssert<?> ndvAssertion = assertThat(distinctCount).as("NDV for " + columnName);
             if (expectedNdv == null) {
                 ndvAssertion.isNull();
-                assertNull(row.getField(3), "null fraction for " + columnName);
+                assertThat(nullsFraction)
+                        .describedAs("null fraction for " + columnName)
+                        .isNull();
             }
             else {
                 ndvAssertion.isBetween(expectedNdv * 0.5, min(expectedNdv * 4.0, tableCardinality)); // [-50%, +300%] but no more than row count
-                assertThat((Double) row.getField(3)).as("Null fraction for " + columnName)
-                        .isBetween(expectedNullFraction * 0.4, min(expectedNullFraction * 1.1, 1.0));
+                AbstractDoubleAssert<?> nullsAssertion = assertThat(nullsFraction).as("Null fraction for " + columnName);
+                if (distinctCount.compareTo(tableCardinality) >= 0) {
+                    nullsAssertion.isEqualTo(0);
+                }
+                else {
+                    double maxNullsFraction = (tableCardinality - distinctCount) / tableCardinality;
+                    expectedNullFraction = Math.min(expectedNullFraction, maxNullsFraction);
+                    nullsAssertion.isBetween(expectedNullFraction * 0.4, expectedNullFraction * 1.1);
+                }
             }
 
-            assertNull(row.getField(4), "min");
-            assertNull(row.getField(5), "max");
+            assertThat(row.getField(4))
+                    .describedAs("min")
+                    .isNull();
+            assertThat(row.getField(5))
+                    .describedAs("max")
+                    .isNull();
         }
     }
 
     protected static double getTableCardinalityFromStats(MaterializedResult statsResult)
     {
         MaterializedRow lastRow = statsResult.getMaterializedRows().get(statsResult.getRowCount() - 1);
-        assertNull(lastRow.getField(0));
-        assertNull(lastRow.getField(1));
-        assertNull(lastRow.getField(2));
-        assertNull(lastRow.getField(3));
-        assertNull(lastRow.getField(5));
-        assertNull(lastRow.getField(6));
-        assertEquals(lastRow.getFieldCount(), 7);
-        assertNotNull(lastRow.getField(4));
-        return ((Number) lastRow.getField(4)).doubleValue();
+        assertThat(lastRow.getField(0)).isNull();
+        assertThat(lastRow.getField(1)).isNull();
+        assertThat(lastRow.getField(2)).isNull();
+        assertThat(lastRow.getField(3)).isNull();
+        assertThat(lastRow.getField(5)).isNull();
+        assertThat(lastRow.getField(6)).isNull();
+        assertThat(lastRow.getFieldCount())
+                .isEqualTo(7);
+        assertThat(lastRow.getField(4)).isNotNull();
+        return (Double) lastRow.getField(4);
     }
 
     protected static class MapBuilder<K, V>

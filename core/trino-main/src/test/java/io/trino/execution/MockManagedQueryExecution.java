@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableSet;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.Session;
+import io.trino.client.NodeVersion;
 import io.trino.execution.StateMachine.StateChangeListener;
 import io.trino.operator.RetryPolicy;
 import io.trino.server.BasicQueryInfo;
@@ -129,8 +130,12 @@ public class MockManagedQueryExecution
                         7,
                         8,
                         9,
+                        5,
                         DataSize.ofBytes(14),
                         15,
+                        DataSize.ofBytes(13),
+                        DataSize.ofBytes(13),
+                        DataSize.ofBytes(13),
                         DataSize.ofBytes(13),
                         16.0,
                         17.0,
@@ -142,8 +147,13 @@ public class MockManagedQueryExecution
                         new Duration(21, NANOSECONDS),
                         new Duration(22, NANOSECONDS),
                         new Duration(23, NANOSECONDS),
+                        new Duration(24, NANOSECONDS),
+                        new Duration(25, NANOSECONDS),
+                        new Duration(26, NANOSECONDS),
+                        new Duration(27, NANOSECONDS),
                         false,
                         ImmutableSet.of(),
+                        OptionalDouble.empty(),
                         OptionalDouble.empty()),
                 null,
                 null,
@@ -175,6 +185,8 @@ public class MockManagedQueryExecution
                         new Duration(8, NANOSECONDS),
 
                         new Duration(100, NANOSECONDS),
+                        new Duration(150, NANOSECONDS),
+                        new Duration(160, NANOSECONDS),
                         new Duration(200, NANOSECONDS),
 
                         9,
@@ -201,6 +213,8 @@ public class MockManagedQueryExecution
                         DataSize.ofBytes(26),
 
                         !state.isDone(),
+                        state.isDone() ? OptionalDouble.empty() : OptionalDouble.of(8.88),
+                        state.isDone() ? OptionalDouble.empty() : OptionalDouble.of(0),
                         new Duration(20, NANOSECONDS),
                         new Duration(21, NANOSECONDS),
                         new Duration(22, NANOSECONDS),
@@ -247,10 +261,13 @@ public class MockManagedQueryExecution
 
                         ImmutableList.of(),
                         DynamicFiltersStats.EMPTY,
+                        ImmutableList.of(),
                         ImmutableList.of()),
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
+                Optional.empty(),
+                false,
                 ImmutableMap.of(),
                 ImmutableSet.of(),
                 ImmutableMap.of(),
@@ -270,7 +287,9 @@ public class MockManagedQueryExecution
                 state.isDone(),
                 Optional.empty(),
                 Optional.empty(),
-                RetryPolicy.NONE);
+                RetryPolicy.NONE,
+                false,
+                new NodeVersion("test"));
     }
 
     @Override

@@ -13,14 +13,15 @@
  */
 package io.trino.operator.window;
 
-import io.trino.metadata.BoundSignature;
-import io.trino.metadata.FunctionNullability;
-import io.trino.operator.aggregation.AggregationMetadata;
-import io.trino.operator.aggregation.WindowAccumulator;
+import io.trino.spi.function.AggregationImplementation;
+import io.trino.spi.function.BoundSignature;
+import io.trino.spi.function.FunctionNullability;
+import io.trino.spi.function.WindowAccumulator;
 import io.trino.spi.function.WindowFunction;
+import io.trino.spi.function.WindowFunctionSupplier;
 
-import java.lang.reflect.Constructor;
 import java.util.List;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import static io.trino.operator.aggregation.AccumulatorCompiler.generateWindowAccumulatorClass;
@@ -29,17 +30,17 @@ import static java.util.Objects.requireNonNull;
 public class AggregationWindowFunctionSupplier
         implements WindowFunctionSupplier
 {
-    private final Constructor<? extends WindowAccumulator> constructor;
+    private final Function<List<Supplier<Object>>, WindowAccumulator> windowAccumulatorFactory;
     private final boolean hasRemoveInput;
     private final List<Class<?>> lambdaInterfaces;
 
-    public AggregationWindowFunctionSupplier(BoundSignature boundSignature, AggregationMetadata aggregationMetadata, FunctionNullability functionNullability)
+    public AggregationWindowFunctionSupplier(BoundSignature boundSignature, AggregationImplementation aggregationImplementation, FunctionNullability functionNullability)
     {
         requireNonNull(boundSignature, "boundSignature is null");
-        requireNonNull(aggregationMetadata, "aggregationMetadata is null");
-        constructor = generateWindowAccumulatorClass(boundSignature, aggregationMetadata, functionNullability);
-        hasRemoveInput = aggregationMetadata.getRemoveInputFunction().isPresent();
-        lambdaInterfaces = aggregationMetadata.getLambdaInterfaces();
+        requireNonNull(aggregationImplementation, "aggregationMetadata is null");
+        windowAccumulatorFactory = generateWindowAccumulatorClass(boundSignature, aggregationImplementation, functionNullability);
+        hasRemoveInput = aggregationImplementation.getWindowAccumulator().isPresent();
+        lambdaInterfaces = aggregationImplementation.getLambdaInterfaces();
     }
 
     @Override
@@ -51,16 +52,11 @@ public class AggregationWindowFunctionSupplier
     @Override
     public WindowFunction createWindowFunction(boolean ignoreNulls, List<Supplier<Object>> lambdaProviders)
     {
-        return new AggregateWindowFunction(() -> createWindowAccumulator(lambdaProviders), hasRemoveInput);
+        return new AggregateWindowFunction(() -> windowAccumulatorFactory.apply(lambdaProviders), hasRemoveInput);
     }
 
     public WindowAccumulator createWindowAccumulator(List<Supplier<Object>> lambdaProviders)
     {
-        try {
-            return constructor.newInstance(lambdaProviders);
-        }
-        catch (ReflectiveOperationException e) {
-            throw new RuntimeException(e);
-        }
+        return windowAccumulatorFactory.apply(lambdaProviders);
     }
 }

@@ -13,10 +13,7 @@
  */
 package io.trino.plugin.clickhouse;
 
-import com.google.common.collect.ImmutableMap;
 import io.trino.testing.QueryRunner;
-
-import static io.trino.plugin.clickhouse.ClickHouseQueryRunner.createClickHouseQueryRunner;
 
 public class TestClickHouseConnectorSmokeTest
         extends BaseClickHouseConnectorSmokeTest
@@ -28,12 +25,9 @@ public class TestClickHouseConnectorSmokeTest
             throws Exception
     {
         clickHouseServer = closeAfterClass(new TestingClickHouseServer());
-        return createClickHouseQueryRunner(
-                clickHouseServer,
-                ImmutableMap.of(),
-                ImmutableMap.<String, String>builder()
-                        .put("clickhouse.map-string-as-varchar", "true") // To handle string types in TPCH tables as varchar instead of varbinary
-                        .buildOrThrow(),
-                REQUIRED_TPCH_TABLES);
+        return ClickHouseQueryRunner.builder(clickHouseServer)
+                .addConnectorProperty("clickhouse.map-string-as-varchar", "true") // To handle string types in TPCH tables as varchar instead of varbinary
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 }

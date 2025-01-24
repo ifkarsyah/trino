@@ -18,19 +18,18 @@ import io.trino.sql.planner.plan.FilterNode;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.TestTable;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 import java.util.OptionalInt;
 
 import static com.google.common.base.Strings.nullToEmpty;
+import static io.trino.spi.connector.ConnectorMetadata.MODIFYING_ROWS_MESSAGE;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.MaterializedResult.resultBuilder;
-import static io.trino.testing.assertions.Assert.assertEquals;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertFalse;
 
 public abstract class BaseMariaDbConnectorTest
         extends BaseJdbcConnectorTest
@@ -40,27 +39,29 @@ public abstract class BaseMariaDbConnectorTest
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_JOIN_PUSHDOWN:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_STDDEV:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_VARIANCE:
-                return true;
-            case SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT:
-            case SUPPORTS_ADD_COLUMN_WITH_COMMENT:
-            case SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN:
-            case SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM:
-            case SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_EQUALITY:
-            case SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_INEQUALITY:
-            case SUPPORTS_RENAME_SCHEMA:
-            case SUPPORTS_COMMENT_ON_COLUMN:
-            case SUPPORTS_ARRAY:
-            case SUPPORTS_ROW_TYPE:
-            case SUPPORTS_NEGATIVE_DATE:
-                return false;
-
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+        return switch (connectorBehavior) {
+            case SUPPORTS_ADD_COLUMN_WITH_POSITION,
+                 SUPPORTS_JOIN_PUSHDOWN -> true;
+            case SUPPORTS_ADD_COLUMN_WITH_COMMENT,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_CORRELATION,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_COUNT_DISTINCT,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_COVARIANCE,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_REGRESSION,
+                 SUPPORTS_ARRAY,
+                 SUPPORTS_COMMENT_ON_COLUMN,
+                 SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                 SUPPORTS_DROP_NOT_NULL_CONSTRAINT,
+                 SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM,
+                 SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN,
+                 SUPPORTS_MAP_TYPE,
+                 SUPPORTS_NEGATIVE_DATE,
+                 SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_EQUALITY,
+                 SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_INEQUALITY,
+                 SUPPORTS_RENAME_SCHEMA,
+                 SUPPORTS_ROW_TYPE,
+                 SUPPORTS_SET_COLUMN_TYPE -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
     }
 
     @Override
@@ -89,22 +90,7 @@ public abstract class BaseMariaDbConnectorTest
     @Override
     public void testShowColumns()
     {
-        // varchar length is different from base test
-        MaterializedResult actual = computeActual("SHOW COLUMNS FROM orders");
-
-        MaterializedResult expectedParametrizedVarchar = resultBuilder(getSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
-                .row("orderkey", "bigint", "", "")
-                .row("custkey", "bigint", "", "")
-                .row("orderstatus", "varchar(255)", "", "")
-                .row("totalprice", "double", "", "")
-                .row("orderdate", "date", "", "")
-                .row("orderpriority", "varchar(255)", "", "")
-                .row("clerk", "varchar(255)", "", "")
-                .row("shippriority", "integer", "", "")
-                .row("comment", "varchar(255)", "", "")
-                .build();
-
-        assertEquals(actual, expectedParametrizedVarchar);
+        assertThat(query("SHOW COLUMNS FROM orders")).result().matches(getDescribeOrdersResult());
     }
 
     @Override
@@ -139,12 +125,11 @@ public abstract class BaseMariaDbConnectorTest
         return Optional.of(dataMappingTestSetup);
     }
 
-    @Test
     @Override
-    public void testDescribeTable()
+    protected MaterializedResult getDescribeOrdersResult()
     {
         // varchar length is different from base test
-        MaterializedResult expectedColumns = resultBuilder(getSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
+        return resultBuilder(getSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
                 .row("orderkey", "bigint", "", "")
                 .row("custkey", "bigint", "", "")
                 .row("orderstatus", "varchar(255)", "", "")
@@ -155,8 +140,6 @@ public abstract class BaseMariaDbConnectorTest
                 .row("shippriority", "integer", "", "")
                 .row("comment", "varchar(255)", "", "")
                 .build();
-        MaterializedResult actualColumns = computeActual("DESCRIBE orders");
-        assertEquals(actualColumns, expectedColumns);
     }
 
     @Test
@@ -198,6 +181,26 @@ public abstract class BaseMariaDbConnectorTest
                 "VALUES ('col1', 'test comment'), ('col2', null), ('col3', null)");
 
         assertUpdate("DROP TABLE test_column_comment");
+    }
+
+    @Test
+    @Override
+    public void testAddNotNullColumn()
+    {
+        assertThatThrownBy(super::testAddNotNullColumn)
+                .isInstanceOf(AssertionError.class)
+                .hasMessage("Should fail to add not null column without a default value to a non-empty table");
+
+        try (TestTable table = newTrinoTable("test_add_nn_col", "(a_varchar varchar)")) {
+            String tableName = table.getName();
+
+            assertUpdate("INSERT INTO " + tableName + " VALUES ('a')", 1);
+            assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN b_varchar varchar NOT NULL");
+            assertThat(query("TABLE " + tableName))
+                    .skippingTypesCheck()
+                    // MariaDB adds implicit default value of '' for b_varchar
+                    .matches("VALUES ('a', '')");
+        }
     }
 
     @Test
@@ -259,19 +262,47 @@ public abstract class BaseMariaDbConnectorTest
     public void testDeleteWithLike()
     {
         assertThatThrownBy(super::testDeleteWithLike)
-                .hasStackTraceContaining("TrinoException: Unsupported delete");
+                .hasStackTraceContaining("TrinoException: " + MODIFYING_ROWS_MESSAGE);
     }
 
+    // Overridden because the method from BaseConnectorTest fails on one of the assertions, see TODO below
+    @Test
+    @Override
+    public void testInsertIntoNotNullColumn()
+    {
+        try (TestTable table = newTrinoTable("insert_not_null", "(nullable_col INTEGER, not_null_col INTEGER NOT NULL)")) {
+            assertUpdate(format("INSERT INTO %s (not_null_col) VALUES (2)", table.getName()), 1);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES (NULL, 2)");
+            assertQueryFails(format("INSERT INTO %s (nullable_col) VALUES (1)", table.getName()), errorMessageForInsertIntoNotNullColumn("not_null_col"));
+            assertQueryFails(format("INSERT INTO %s (not_null_col, nullable_col) VALUES (NULL, 3)", table.getName()), "NULL value not allowed for NOT NULL column: not_null_col");
+            assertQueryFails(format("INSERT INTO %s (not_null_col, nullable_col) VALUES (TRY(5/0), 4)", table.getName()), "NULL value not allowed for NOT NULL column: not_null_col");
+            assertQueryFails(format("INSERT INTO %s (not_null_col) VALUES (TRY(6/0))", table.getName()), "NULL value not allowed for NOT NULL column: not_null_col");
+            assertQueryFails(format("INSERT INTO %s (nullable_col) SELECT nationkey FROM nation", table.getName()), errorMessageForInsertIntoNotNullColumn("not_null_col"));
+            // TODO (https://github.com/trinodb/trino/issues/13551) This doesn't fail for other connectors so
+            //  probably shouldn't fail for MariaDB either. Once fixed, remove test override.
+            assertQueryFails(format("INSERT INTO %s (nullable_col) SELECT nationkey FROM nation WHERE regionkey < 0", table.getName()), ".*Field 'not_null_col' doesn't have a default value.*");
+        }
+
+        try (TestTable table = newTrinoTable("commuted_not_null", "(nullable_col BIGINT, not_null_col BIGINT NOT NULL)")) {
+            assertUpdate(format("INSERT INTO %s (not_null_col) VALUES (2)", table.getName()), 1);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES (NULL, 2)");
+            // This is enforced by the engine and not the connector
+            assertQueryFails(format("INSERT INTO %s (not_null_col, nullable_col) VALUES (NULL, 3)", table.getName()), "NULL value not allowed for NOT NULL column: not_null_col");
+        }
+    }
+
+    @Test
     @Override
     public void testNativeQueryCreateStatement()
     {
         // Override because MariaDB returns a ResultSet metadata with no columns for CREATE statement.
-        assertFalse(getQueryRunner().tableExists(getSession(), "numbers"));
-        assertThatThrownBy(() -> query("SELECT * FROM TABLE(system.query(query => 'CREATE TABLE tpch.numbers(n INTEGER)'))"))
-                .hasMessageContaining("descriptor has no fields");
-        assertFalse(getQueryRunner().tableExists(getSession(), "numbers"));
+        assertThat(getQueryRunner().tableExists(getSession(), "numbers")).isFalse();
+        assertThat(query("SELECT * FROM TABLE(system.query(query => 'CREATE TABLE tpch.numbers(n INTEGER)'))"))
+                .nonTrinoExceptionFailure().hasMessageContaining("descriptor has no fields");
+        assertThat(getQueryRunner().tableExists(getSession(), "numbers")).isFalse();
     }
 
+    @Test
     @Override
     public void testNativeQueryInsertStatementTableExists()
     {
@@ -280,8 +311,8 @@ public abstract class BaseMariaDbConnectorTest
         // The query fails because there are no columns, but even if columns were not required, the query would fail
         // to execute in MariaDB because the connector wraps it in additional syntax, which causes syntax error.
         try (TestTable testTable = simpleTable()) {
-            assertThatThrownBy(() -> query(format("SELECT * FROM TABLE(system.query(query => 'INSERT INTO %s VALUES (3)'))", testTable.getName())))
-                    .hasMessageContaining("descriptor has no fields");
+            assertThat(query(format("SELECT * FROM TABLE(system.query(query => 'INSERT INTO %s VALUES (3)'))", testTable.getName())))
+                    .nonTrinoExceptionFailure().hasMessageContaining("descriptor has no fields");
             assertQuery("SELECT * FROM " + testTable.getName(), "VALUES 1, 2");
         }
     }
@@ -289,19 +320,31 @@ public abstract class BaseMariaDbConnectorTest
     @Override
     protected String errorMessageForCreateTableAsSelectNegativeDate(String date)
     {
-        return format("Failed to insert data: .* \\(conn=.*\\) Incorrect date value: '%s'.*", date);
+        return format("Failed to insert data: \\(conn=.*\\) Incorrect date value: '%s'.*", date);
     }
 
     @Override
     protected String errorMessageForInsertNegativeDate(String date)
     {
-        return format("Failed to insert data: .* \\(conn=.*\\) Incorrect date value: '%s'.*", date);
+        return format("Failed to insert data: \\(conn=.*\\) Incorrect date value: '%s'.*", date);
     }
 
     @Override
     protected String errorMessageForInsertIntoNotNullColumn(String columnName)
     {
-        return format("Failed to insert data: .* \\(conn=.*\\) Field '%s' doesn't have a default value", columnName);
+        return format("Failed to insert data: \\(conn=.*\\) Field '%s' doesn't have a default value", columnName);
+    }
+
+    @Override
+    protected OptionalInt maxSchemaNameLength()
+    {
+        return OptionalInt.of(64);
+    }
+
+    @Override
+    protected void verifySchemaNameLengthFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessageContaining("Incorrect database name");
     }
 
     @Override
@@ -314,5 +357,17 @@ public abstract class BaseMariaDbConnectorTest
     protected void verifyTableNameLengthFailurePermissible(Throwable e)
     {
         assertThat(e).hasMessageContaining("Incorrect table name");
+    }
+
+    @Override
+    protected OptionalInt maxColumnNameLength()
+    {
+        return OptionalInt.of(64);
+    }
+
+    @Override
+    protected void verifyColumnNameLengthFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessageMatching("(.*Identifier name '.*' is too long|.*Incorrect column name.*)");
     }
 }

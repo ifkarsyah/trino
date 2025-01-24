@@ -13,18 +13,27 @@
  */
 package io.trino.spi.exchange;
 
-import io.airlift.slice.Slice;
-
-import javax.annotation.concurrent.ThreadSafe;
+import com.google.errorprone.annotations.ThreadSafe;
+import io.trino.spi.Experimental;
 
 import java.io.Closeable;
-import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 @ThreadSafe
+@Experimental(eta = "2024-03-01")
 public interface Exchange
         extends Closeable
 {
+    enum SourceHandlesDeliveryMode {
+        STANDARD,
+        EAGER
+    }
+
+    /**
+     * Get id of this exchange
+     */
+    ExchangeId getId();
+
     /**
      * Registers a new sink
      *
@@ -55,52 +64,57 @@ public interface Exchange
      * @param sinkHandle - handle returned by <code>addSink</code>
      * @param taskAttemptId - attempt id
      * @return ExchangeSinkInstanceHandle to be sent to a worker that is needed to create an {@link ExchangeSink} instance using
-     * {@link ExchangeManager#createSink(ExchangeSinkInstanceHandle, boolean)}
+     * {@link ExchangeManager#createSink(ExchangeSinkInstanceHandle)}
      */
-    ExchangeSinkInstanceHandle instantiateSink(ExchangeSinkHandle sinkHandle, int taskAttemptId);
+    CompletableFuture<ExchangeSinkInstanceHandle> instantiateSink(ExchangeSinkHandle sinkHandle, int taskAttemptId);
+
+    /**
+     * Update {@link ExchangeSinkInstanceHandle}. Update is requested by {@link ExchangeSink}.
+     * The updated {@link ExchangeSinkInstanceHandle} is expected to be set by {@link ExchangeSink#updateHandle(ExchangeSinkInstanceHandle)}.
+     *
+     * @param sinkHandle - handle returned by <code>addSink</code>
+     * @param taskAttemptId - attempt id
+     * @return updated handle
+     */
+    CompletableFuture<ExchangeSinkInstanceHandle> updateSinkInstanceHandle(ExchangeSinkHandle sinkHandle, int taskAttemptId);
 
     /**
      * Called by the engine when an attempt finishes successfully.
      * <p>
      * This method is expected to be lightweight. An implementation shouldn't perform any long running blocking operations within this method.
      */
-    void sinkFinished(ExchangeSinkInstanceHandle handle);
+    void sinkFinished(ExchangeSinkHandle sinkHandle, int taskAttemptId);
 
     /**
-     * Returns a future containing handles to be used to read data from an exchange.
-     * <p>
-     * Future must be resolved when the data is available to be read.
-     * <p>
-     * The implementation is expected to return one handle per output partition (see {@link ExchangeSink#add(int, Slice)})
-     * <p>
-     * Partitions can be further split if needed by calling {@link #split(ExchangeSourceHandle, long)}
+     * Called by the engine when all required sinks finished successfully.
+     * While some source tasks may still be running and writing to their sinks the data written to these sinks could be safely ignored after this method is invoked.
+     */
+    void allRequiredSinksFinished();
+
+    /**
+     * Returns an {@link ExchangeSourceHandleSource} instance to be used to enumerate {@link ExchangeSourceHandle}s.
      *
      * @return Future containing a list of {@link ExchangeSourceHandle} to be sent to a
-     * worker that is needed to create an {@link ExchangeSource} using {@link ExchangeManager#createSource(List)}
+     * worker that is needed to create an {@link ExchangeSource} using {@link ExchangeManager#createSource()}
      */
-    CompletableFuture<List<ExchangeSourceHandle>> getSourceHandles();
+    ExchangeSourceHandleSource getSourceHandles();
 
     /**
-     * Splits an {@link ExchangeSourceHandle} into a number of smaller partitions.
+     * Change {@link ExchangeSourceHandleSource} delivery mode.
      * <p>
-     * Exchange implementation is allowed to return {@link ExchangeSourceHandle} even before all the data
-     * is written to an exchange. At the moment when the method is called it may not be possible to
-     * complete the split operation. This methods returns a {@link ExchangeSourceSplitter} object
-     * that allows an iterative splitting while the data is still being written to an exchange.
-     *
-     * @param handle returned by the {@link #getSourceHandles()}
-     * @param targetSizeInBytes desired maximum size of a single partition produced by {@link ExchangeSourceSplitter}
-     * @return {@link ExchangeSourceSplitter} to be used for iterative splitting of a given partition
+     * In {@link SourceHandlesDeliveryMode#STANDARD} mode the handles are delivered at
+     * pace optimized for throughput.
+     * <p>
+     * In {@link SourceHandlesDeliveryMode#EAGER} the handles are delivered as soon as possible even if that would mean
+     * each handle corresponds to smaller amount of data, which may be not optimal from throughput.
+     * <p>
+     * There are no strict constraints regarding when this method can be called. When called, the newly selected delivery mode
+     * will apply to all {@link ExchangeSourceHandleSource} instances already obtained via {@link #getSourceHandles()} method.
+     * As well as to those yet to be obtained.
+     * <p>
+     * Support for this method is optional and best-effort.
      */
-    ExchangeSourceSplitter split(ExchangeSourceHandle handle, long targetSizeInBytes);
-
-    /**
-     * Returns statistics (such as size in bytes) for a partition represented by a {@link ExchangeSourceHandle}
-     *
-     * @param handle returned by the {@link #getSourceHandles()} or {@link ExchangeSourceSplitter#getNext()}
-     * @return object containing statistics for a given {@link ExchangeSourceHandle}
-     */
-    ExchangeSourceStatistics getExchangeSourceStatistics(ExchangeSourceHandle handle);
+    default void setSourceHandlesDeliveryMode(SourceHandlesDeliveryMode sourceHandlesDeliveryMode) {}
 
     @Override
     void close();

@@ -20,8 +20,7 @@ import io.trino.spi.Page;
 import io.trino.spi.TrinoException;
 import io.trino.spi.type.ArrayType;
 import io.trino.sql.analyzer.TypeSignatureProvider;
-import io.trino.sql.tree.QualifiedName;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.List;
@@ -30,7 +29,7 @@ import static io.trino.block.BlockAssertions.createArrayBigintBlock;
 import static io.trino.block.BlockAssertions.createBlockOfReals;
 import static io.trino.block.BlockAssertions.createDoublesBlock;
 import static io.trino.block.BlockAssertions.createLongsBlock;
-import static io.trino.block.BlockAssertions.createRLEBlock;
+import static io.trino.block.BlockAssertions.createRepeatedValuesBlock;
 import static io.trino.block.BlockAssertions.createStringsBlock;
 import static io.trino.operator.aggregation.AggregationTestUtils.assertAggregation;
 import static io.trino.operator.aggregation.AggregationTestUtils.groupedAggregation;
@@ -39,7 +38,7 @@ import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
-import static org.testng.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestMinMaxByNAggregation
 {
@@ -51,66 +50,66 @@ public class TestMinMaxByNAggregation
         List<TypeSignatureProvider> parameterTypes = fromTypes(DOUBLE, DOUBLE, BIGINT);
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 Arrays.asList((Double) null),
                 createDoublesBlock(1.0, null),
                 createDoublesBlock(3.0, 5.0),
-                createRLEBlock(1L, 2));
+                createRepeatedValuesBlock(1L, 2));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 null,
                 createDoublesBlock(null, null),
                 createDoublesBlock(null, null),
-                createRLEBlock(1L, 2));
+                createRepeatedValuesBlock(1L, 2));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 Arrays.asList(1.0),
                 createDoublesBlock(null, 1.0, null, null),
                 createDoublesBlock(null, 0.0, null, null),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 Arrays.asList(1.0),
                 createDoublesBlock(1.0),
                 createDoublesBlock(0.0),
-                createRLEBlock(2L, 1));
+                createRepeatedValuesBlock(2L, 1));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 null,
                 createDoublesBlock(),
                 createDoublesBlock(),
-                createRLEBlock(2L, 0));
+                createRepeatedValuesBlock(2L, 0));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of(2.5),
                 createDoublesBlock(2.5, 2.0, 5.0, 3.0),
                 createDoublesBlock(4.0, 1.5, 2.0, 3.0),
-                createRLEBlock(1L, 4));
+                createRepeatedValuesBlock(1L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of(2.5, 3.0),
                 createDoublesBlock(2.5, 2.0, 5.0, 3.0),
                 createDoublesBlock(4.0, 1.5, 2.0, 3.0),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
     }
 
     @Test
@@ -119,39 +118,39 @@ public class TestMinMaxByNAggregation
         List<TypeSignatureProvider> parameterTypes = fromTypes(DOUBLE, DOUBLE, BIGINT);
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 Arrays.asList((Double) null),
                 createDoublesBlock(1.0, null),
                 createDoublesBlock(5.0, 3.0),
-                createRLEBlock(1L, 2));
+                createRepeatedValuesBlock(1L, 2));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 null,
                 createDoublesBlock(null, null),
                 createDoublesBlock(null, null),
-                createRLEBlock(1L, 2));
+                createRepeatedValuesBlock(1L, 2));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of(2.0),
                 createDoublesBlock(2.5, 2.0, 5.0, 3.0),
                 createDoublesBlock(4.0, 1.5, 2.0, 3.0),
-                createRLEBlock(1L, 4));
+                createRepeatedValuesBlock(1L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of(2.0, 5.0),
                 createDoublesBlock(2.5, 2.0, 5.0, 3.0),
                 createDoublesBlock(4.0, 1.5, 2.0, 3.0),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
     }
 
     @Test
@@ -160,75 +159,75 @@ public class TestMinMaxByNAggregation
         List<TypeSignatureProvider> parameterTypes = fromTypes(VARCHAR, DOUBLE, BIGINT);
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("z", "a"),
                 createStringsBlock("z", "a", "x", "b"),
                 createDoublesBlock(1.0, 2.0, 2.0, 3.0),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("a", "zz"),
                 createStringsBlock("zz", "hi", "bb", "a"),
                 createDoublesBlock(0.0, 1.0, 2.0, -1.0),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("a", "zz"),
                 createStringsBlock("zz", "hi", null, "a"),
                 createDoublesBlock(0.0, 1.0, null, -1.0),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("b", "c"),
                 createStringsBlock("a", "b", "c", "d"),
                 createDoublesBlock(Double.NaN, 2.0, 3.0, 4.0),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("a", "c"),
                 createStringsBlock("a", "b", "c", "d"),
                 createDoublesBlock(1.0, Double.NaN, 3.0, 4.0),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("a", "b"),
                 createStringsBlock("a", "b", "c", "d"),
                 createDoublesBlock(1.0, 2.0, Double.NaN, 4.0),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("a", "b"),
                 createStringsBlock("a", "b", "c", "d"),
                 createDoublesBlock(1.0, 2.0, 3.0, Double.NaN),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("a", "b"),
                 createStringsBlock("a", "b"),
                 createDoublesBlock(1.0, Double.NaN),
-                createRLEBlock(2L, 2));
+                createRepeatedValuesBlock(2L, 2));
     }
 
     @Test
@@ -237,75 +236,75 @@ public class TestMinMaxByNAggregation
         List<TypeSignatureProvider> parameterTypes = fromTypes(VARCHAR, DOUBLE, BIGINT);
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("a", "z"),
                 createStringsBlock("z", "a", null),
                 createDoublesBlock(1.0, 2.0, null),
-                createRLEBlock(2L, 3));
+                createRepeatedValuesBlock(2L, 3));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("bb", "hi"),
                 createStringsBlock("zz", "hi", "bb", "a"),
                 createDoublesBlock(0.0, 1.0, 2.0, -1.0),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("hi", "zz"),
                 createStringsBlock("zz", "hi", null, "a"),
                 createDoublesBlock(0.0, 1.0, null, -1.0),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("d", "c"),
                 createStringsBlock("a", "b", "c", "d"),
                 createDoublesBlock(Double.NaN, 2.0, 3.0, 4.0),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("d", "c"),
                 createStringsBlock("a", "b", "c", "d"),
                 createDoublesBlock(1.0, Double.NaN, 3.0, 4.0),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("d", "b"),
                 createStringsBlock("a", "b", "c", "d"),
                 createDoublesBlock(1.0, 2.0, Double.NaN, 4.0),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("c", "b"),
                 createStringsBlock("a", "b", "c", "d"),
                 createDoublesBlock(1.0, 2.0, 3.0, Double.NaN),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("a", "b"),
                 createStringsBlock("a", "b"),
                 createDoublesBlock(1.0, Double.NaN),
-                createRLEBlock(2L, 2));
+                createRepeatedValuesBlock(2L, 2));
     }
 
     @Test
@@ -314,75 +313,75 @@ public class TestMinMaxByNAggregation
         List<TypeSignatureProvider> parameterTypes = fromTypes(VARCHAR, REAL, BIGINT);
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("z", "a"),
                 createStringsBlock("z", "a", "x", "b"),
                 createBlockOfReals(1.0f, 2.0f, 2.0f, 3.0f),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("a", "zz"),
                 createStringsBlock("zz", "hi", "bb", "a"),
                 createBlockOfReals(0.0f, 1.0f, 2.0f, -1.0f),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("a", "zz"),
                 createStringsBlock("zz", "hi", null, "a"),
                 createBlockOfReals(0.0f, 1.0f, null, -1.0f),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("b", "c"),
                 createStringsBlock("a", "b", "c", "d"),
                 createBlockOfReals(Float.NaN, 2.0f, 3.0f, 4.0f),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("a", "c"),
                 createStringsBlock("a", "b", "c", "d"),
                 createBlockOfReals(1.0f, Float.NaN, 3.0f, 4.0f),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("a", "b"),
                 createStringsBlock("a", "b", "c", "d"),
                 createBlockOfReals(1.0f, 2.0f, Float.NaN, 4.0f),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("a", "b"),
                 createStringsBlock("a", "b", "c", "d"),
                 createBlockOfReals(1.0f, 2.0f, 3.0f, Float.NaN),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("a", "b"),
                 createStringsBlock("a", "b"),
                 createBlockOfReals(1.0f, Float.NaN),
-                createRLEBlock(2L, 2));
+                createRepeatedValuesBlock(2L, 2));
     }
 
     @Test
@@ -391,75 +390,75 @@ public class TestMinMaxByNAggregation
         List<TypeSignatureProvider> parameterTypes = fromTypes(VARCHAR, REAL, BIGINT);
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("a", "z"),
                 createStringsBlock("z", "a", null),
                 createBlockOfReals(1.0f, 2.0f, null),
-                createRLEBlock(2L, 3));
+                createRepeatedValuesBlock(2L, 3));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("bb", "hi"),
                 createStringsBlock("zz", "hi", "bb", "a"),
                 createBlockOfReals(0.0f, 1.0f, 2.0f, -1.0f),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("hi", "zz"),
                 createStringsBlock("zz", "hi", null, "a"),
                 createBlockOfReals(0.0f, 1.0f, null, -1.0f),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("d", "c"),
                 createStringsBlock("a", "b", "c", "d"),
                 createBlockOfReals(Float.NaN, 2.0f, 3.0f, 4.0f),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("d", "c"),
                 createStringsBlock("a", "b", "c", "d"),
                 createBlockOfReals(1.0f, Float.NaN, 3.0f, 4.0f),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("d", "b"),
                 createStringsBlock("a", "b", "c", "d"),
                 createBlockOfReals(1.0f, 2.0f, Float.NaN, 4.0f),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("c", "b"),
                 createStringsBlock("a", "b", "c", "d"),
                 createBlockOfReals(1.0f, 2.0f, 3.0f, Float.NaN),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("a", "b"),
                 createStringsBlock("a", "b"),
                 createBlockOfReals(1.0f, Float.NaN),
-                createRLEBlock(2L, 2));
+                createRepeatedValuesBlock(2L, 2));
     }
 
     @Test
@@ -468,30 +467,30 @@ public class TestMinMaxByNAggregation
         List<TypeSignatureProvider> parameterTypes = fromTypes(DOUBLE, VARCHAR, BIGINT);
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of(2.0, 3.0),
                 createDoublesBlock(1.0, 2.0, 2.0, 3.0),
                 createStringsBlock("z", "a", "x", "b"),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of(-1.0, 2.0),
                 createDoublesBlock(0.0, 1.0, 2.0, -1.0),
                 createStringsBlock("zz", "hi", "bb", "a"),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of(-1.0, 1.0),
                 createDoublesBlock(0.0, 1.0, null, -1.0),
                 createStringsBlock("zz", "hi", null, "a"),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
     }
 
     @Test
@@ -500,30 +499,30 @@ public class TestMinMaxByNAggregation
         List<TypeSignatureProvider> parameterTypes = fromTypes(DOUBLE, VARCHAR, BIGINT);
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of(1.0, 2.0),
                 createDoublesBlock(1.0, 2.0, null),
                 createStringsBlock("z", "a", null),
-                createRLEBlock(2L, 3));
+                createRepeatedValuesBlock(2L, 3));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of(0.0, 1.0),
                 createDoublesBlock(0.0, 1.0, 2.0, -1.0),
                 createStringsBlock("zz", "hi", "bb", "a"),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of(0.0, 1.0),
                 createDoublesBlock(0.0, 1.0, null, -1.0),
                 createStringsBlock("zz", "hi", null, "a"),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
     }
 
     @Test
@@ -532,12 +531,12 @@ public class TestMinMaxByNAggregation
         List<TypeSignatureProvider> parameterTypes = fromTypes(new ArrayType(BIGINT), VARCHAR, BIGINT);
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of(ImmutableList.of(2L, 3L), ImmutableList.of(4L, 5L)),
                 createArrayBigintBlock(ImmutableList.of(ImmutableList.of(1L, 2L), ImmutableList.of(2L, 3L), ImmutableList.of(3L, 4L), ImmutableList.of(4L, 5L))),
                 createStringsBlock("z", "a", "x", "b"),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
     }
 
     @Test
@@ -546,12 +545,12 @@ public class TestMinMaxByNAggregation
         List<TypeSignatureProvider> parameterTypes = fromTypes(new ArrayType(BIGINT), VARCHAR, BIGINT);
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of(ImmutableList.of(1L, 2L), ImmutableList.of(3L, 4L)),
                 createArrayBigintBlock(ImmutableList.of(ImmutableList.of(1L, 2L), ImmutableList.of(2L, 3L), ImmutableList.of(3L, 4L), ImmutableList.of(4L, 5L))),
                 createStringsBlock("z", "a", "x", "b"),
-                createRLEBlock(2L, 4));
+                createRepeatedValuesBlock(2L, 4));
     }
 
     @Test
@@ -560,12 +559,12 @@ public class TestMinMaxByNAggregation
         List<TypeSignatureProvider> parameterTypes = fromTypes(VARCHAR, new ArrayType(BIGINT), BIGINT);
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("min_by"),
+                "min_by",
                 parameterTypes,
                 ImmutableList.of("b", "x", "z"),
                 createStringsBlock("z", "a", "x", "b"),
                 createArrayBigintBlock(ImmutableList.of(ImmutableList.of(1L, 2L), ImmutableList.of(2L, 3L), ImmutableList.of(0L, 3L), ImmutableList.of(0L, 2L))),
-                createRLEBlock(3L, 4));
+                createRepeatedValuesBlock(3L, 4));
     }
 
     @Test
@@ -574,23 +573,23 @@ public class TestMinMaxByNAggregation
         List<TypeSignatureProvider> parameterTypes = fromTypes(VARCHAR, new ArrayType(BIGINT), BIGINT);
         assertAggregation(
                 FUNCTION_RESOLUTION,
-                QualifiedName.of("max_by"),
+                "max_by",
                 parameterTypes,
                 ImmutableList.of("a", "z", "x"),
                 createStringsBlock("z", "a", "x", "b"),
                 createArrayBigintBlock(ImmutableList.of(ImmutableList.of(1L, 2L), ImmutableList.of(2L, 3L), ImmutableList.of(0L, 3L), ImmutableList.of(0L, 2L))),
-                createRLEBlock(3L, 4));
+                createRepeatedValuesBlock(3L, 4));
     }
 
     @Test
     public void testOutOfBound()
     {
-        TestingAggregationFunction function = FUNCTION_RESOLUTION.getAggregateFunction(QualifiedName.of("max_by"), fromTypes(VARCHAR, BIGINT, BIGINT));
+        TestingAggregationFunction function = FUNCTION_RESOLUTION.getAggregateFunction("max_by", fromTypes(VARCHAR, BIGINT, BIGINT));
         try {
             groupedAggregation(function, new Page(createStringsBlock("z"), createLongsBlock(0), createLongsBlock(10001)));
         }
         catch (TrinoException e) {
-            assertEquals(e.getMessage(), "third argument of max_by must be less than or equal to 10000; found 10001");
+            assertThat(e.getMessage()).isEqualTo("third argument of max_by must be less than or equal to 10000; found 10001");
         }
     }
 }

@@ -21,19 +21,21 @@ import io.airlift.slice.SizeOf;
 import io.trino.plugin.jdbc.JdbcSplit;
 import io.trino.spi.HostAddress;
 import org.apache.phoenix.mapreduce.PhoenixInputSplit;
-import org.openjdk.jol.info.ClassLayout;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.slice.SizeOf.sizeOf;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.joining;
 
 public class PhoenixSplit
         extends JdbcSplit
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(PhoenixSplit.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(PhoenixSplit.class);
 
     private final List<HostAddress> addresses;
     private final SerializedPhoenixInputSplit serializedPhoenixInputSplit;
@@ -77,10 +79,8 @@ public class PhoenixSplit
     }
 
     @Override
-    public Object getInfo()
+    public Map<String, String> getSplitInfo()
     {
-        return ImmutableMap.builder()
-                .put("addresses", addresses)
-                .buildOrThrow();
+        return ImmutableMap.of("addresses", addresses.stream().map(HostAddress::toString).collect(joining(",")));
     }
 }

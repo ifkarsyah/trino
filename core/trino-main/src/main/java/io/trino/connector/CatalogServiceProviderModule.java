@@ -14,10 +14,11 @@
 package io.trino.connector;
 
 import com.google.inject.Binder;
+import com.google.inject.Inject;
 import com.google.inject.Module;
 import com.google.inject.Provides;
+import com.google.inject.Singleton;
 import io.trino.SystemSessionPropertiesProvider;
-import io.trino.connector.ConnectorManager.ConnectorServices;
 import io.trino.metadata.AnalyzePropertyManager;
 import io.trino.metadata.CatalogProcedures;
 import io.trino.metadata.CatalogTableFunctions;
@@ -28,16 +29,15 @@ import io.trino.metadata.SchemaPropertyManager;
 import io.trino.metadata.SessionPropertyManager;
 import io.trino.metadata.TableProceduresPropertyManager;
 import io.trino.metadata.TablePropertyManager;
+import io.trino.metadata.ViewPropertyManager;
 import io.trino.security.AccessControlManager;
 import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorIndexProvider;
 import io.trino.spi.connector.ConnectorNodePartitioningProvider;
 import io.trino.spi.connector.ConnectorPageSinkProvider;
-import io.trino.spi.connector.ConnectorPageSourceProvider;
+import io.trino.spi.connector.ConnectorPageSourceProviderFactory;
 import io.trino.spi.connector.ConnectorSplitManager;
-
-import javax.inject.Inject;
-import javax.inject.Singleton;
+import io.trino.spi.function.FunctionProvider;
 
 import java.util.Optional;
 import java.util.Set;
@@ -60,9 +60,9 @@ public class CatalogServiceProviderModule
 
     @Provides
     @Singleton
-    public static CatalogServiceProvider<ConnectorPageSourceProvider> createPageSourceProvider(ConnectorServicesProvider connectorServicesProvider)
+    public static CatalogServiceProvider<ConnectorPageSourceProviderFactory> createPageSourceProviderFactory(ConnectorServicesProvider connectorServicesProvider)
     {
-        return new ConnectorCatalogServiceProvider<>("page source provider", connectorServicesProvider, connector -> connector.getPageSourceProvider().orElse(null));
+        return new ConnectorCatalogServiceProvider<>("page source provider factory", connectorServicesProvider, connector -> connector.getPageSourceProviderFactory().orElse(null));
     }
 
     @Provides
@@ -137,6 +137,13 @@ public class CatalogServiceProviderModule
 
     @Provides
     @Singleton
+    public static ViewPropertyManager createViewPropertyManager(ConnectorServicesProvider connectorServicesProvider)
+    {
+        return new ViewPropertyManager(new ConnectorCatalogServiceProvider<>("view properties", connectorServicesProvider, ConnectorServices::getViewProperties));
+    }
+
+    @Provides
+    @Singleton
     public static MaterializedViewPropertyManager createMaterializedViewPropertyManager(ConnectorServicesProvider connectorServicesProvider)
     {
         return new MaterializedViewPropertyManager(new ConnectorCatalogServiceProvider<>("materialized view properties", connectorServicesProvider, ConnectorServices::getMaterializedViewProperties));
@@ -161,6 +168,13 @@ public class CatalogServiceProviderModule
     public static CatalogServiceProvider<Optional<ConnectorAccessControl>> createAccessControlProvider(ConnectorServicesProvider connectorServicesProvider)
     {
         return new ConnectorCatalogServiceProvider<>("access control", connectorServicesProvider, ConnectorServices::getAccessControl);
+    }
+
+    @Provides
+    @Singleton
+    public static CatalogServiceProvider<FunctionProvider> createFunctionProvider(ConnectorServicesProvider connectorServicesProvider)
+    {
+        return new ConnectorCatalogServiceProvider<>("function provider", connectorServicesProvider, ConnectorServices::getFunctionProvider);
     }
 
     private static class ConnectorAccessControlLazyRegister

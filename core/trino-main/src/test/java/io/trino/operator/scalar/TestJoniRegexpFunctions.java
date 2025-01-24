@@ -15,7 +15,7 @@ package io.trino.operator.scalar;
 
 import com.google.common.io.Resources;
 import io.trino.spi.TrinoException;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicReference;
@@ -25,10 +25,8 @@ import static io.trino.operator.scalar.JoniRegexpCasts.joniRegexp;
 import static io.trino.operator.scalar.JoniRegexpFunctions.regexpReplace;
 import static io.trino.spi.StandardErrorCode.GENERIC_USER_ERROR;
 import static io.trino.sql.analyzer.RegexLibrary.JONI;
-import static io.trino.type.LikeFunctions.likeVarchar;
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNotNull;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestJoniRegexpFunctions
         extends AbstractTestRegexpFunctions
@@ -36,16 +34,6 @@ public class TestJoniRegexpFunctions
     public TestJoniRegexpFunctions()
     {
         super(JONI);
-    }
-
-    @Test
-    public void testMatchInterruptible()
-            throws IOException, InterruptedException
-    {
-        String source = Resources.toString(Resources.getResource("regularExpressionExtraLongSource.txt"), UTF_8);
-        String pattern = "\\((.*,)+(.*\\))";
-        // Test the interruptible version of `Matcher#match` by "LIKE"
-        testJoniRegexpFunctionsInterruptible(() -> likeVarchar(utf8Slice(source), joniRegexp(utf8Slice(pattern))));
     }
 
     @Test
@@ -79,7 +67,7 @@ public class TestJoniRegexpFunctions
 
         // wait for child thread to get in to terminated state
         searchChildThread.join();
-        assertNotNull(trinoException.get());
-        assertEquals(trinoException.get().getErrorCode(), GENERIC_USER_ERROR.toErrorCode());
+        assertThat(trinoException.get()).isNotNull();
+        assertThat(trinoException.get().getErrorCode()).isEqualTo(GENERIC_USER_ERROR.toErrorCode());
     }
 }

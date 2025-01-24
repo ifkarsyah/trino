@@ -21,18 +21,17 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import io.trino.Session;
-import io.trino.execution.warnings.WarningCollector;
-import io.trino.metadata.BoundSignature;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.metadata.ResolvedIndex;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.ir.Booleans;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.DomainTranslator;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.planner.SymbolAllocator;
-import io.trino.sql.planner.TypeProvider;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.FilterNode;
@@ -47,11 +46,6 @@ import io.trino.sql.planner.plan.SortNode;
 import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.sql.planner.plan.WindowNode;
 import io.trino.sql.planner.plan.WindowNode.Function;
-import io.trino.sql.tree.BooleanLiteral;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.QualifiedName;
-import io.trino.sql.tree.SymbolReference;
-import io.trino.sql.tree.WindowFrame;
 
 import java.util.List;
 import java.util.Map;
@@ -64,8 +58,10 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Predicates.in;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static io.trino.sql.ExpressionUtils.combineConjuncts;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.spi.function.FunctionKind.AGGREGATE;
+import static io.trino.sql.ir.Booleans.TRUE;
+import static io.trino.sql.ir.IrUtils.combineConjuncts;
+import static io.trino.sql.planner.plan.WindowFrameType.RANGE;
 import static java.util.Objects.requireNonNull;
 import static java.util.function.Function.identity;
 
@@ -80,31 +76,24 @@ public class IndexJoinOptimizer
     }
 
     @Override
-    public PlanNode optimize(PlanNode plan, Session session, TypeProvider type, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator, WarningCollector warningCollector)
+    public PlanNode optimize(PlanNode plan, Context context)
     {
         requireNonNull(plan, "plan is null");
-        requireNonNull(session, "session is null");
-        requireNonNull(symbolAllocator, "symbolAllocator is null");
-        requireNonNull(idAllocator, "idAllocator is null");
-
-        return SimplePlanRewriter.rewriteWith(new Rewriter(symbolAllocator, idAllocator, plannerContext, session), plan, null);
+        return SimplePlanRewriter.rewriteWith(new Rewriter(context.idAllocator(), plannerContext, context.session()), plan, null);
     }
 
     private static class Rewriter
             extends SimplePlanRewriter<Void>
     {
-        private final SymbolAllocator symbolAllocator;
         private final PlanNodeIdAllocator idAllocator;
         private final PlannerContext plannerContext;
         private final Session session;
 
         private Rewriter(
-                SymbolAllocator symbolAllocator,
                 PlanNodeIdAllocator idAllocator,
                 PlannerContext plannerContext,
                 Session session)
         {
-            this.symbolAllocator = requireNonNull(symbolAllocator, "symbolAllocator is null");
             this.idAllocator = requireNonNull(idAllocator, "idAllocator is null");
             this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
             this.session = requireNonNull(session, "session is null");
@@ -123,7 +112,6 @@ public class IndexJoinOptimizer
                 Optional<PlanNode> leftIndexCandidate = IndexSourceRewriter.rewriteWithIndex(
                         leftRewritten,
                         ImmutableSet.copyOf(leftJoinSymbols),
-                        symbolAllocator,
                         idAllocator,
                         plannerContext,
                         session);
@@ -136,7 +124,6 @@ public class IndexJoinOptimizer
                 Optional<PlanNode> rightIndexCandidate = IndexSourceRewriter.rewriteWithIndex(
                         rightRewritten,
                         ImmutableSet.copyOf(rightJoinSymbols),
-                        symbolAllocator,
                         idAllocator,
                         plannerContext,
                         session);
@@ -245,35 +232,31 @@ public class IndexJoinOptimizer
     private static class IndexSourceRewriter
             extends SimplePlanRewriter<IndexSourceRewriter.Context>
     {
-        private final SymbolAllocator symbolAllocator;
         private final PlanNodeIdAllocator idAllocator;
         private final PlannerContext plannerContext;
-        private final DomainTranslator domainTranslator;
         private final Session session;
+        private final DomainTranslator domainTranslator;
 
         private IndexSourceRewriter(
-                SymbolAllocator symbolAllocator,
                 PlanNodeIdAllocator idAllocator,
                 PlannerContext plannerContext,
                 Session session)
         {
             this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
-            this.domainTranslator = new DomainTranslator(plannerContext);
-            this.symbolAllocator = requireNonNull(symbolAllocator, "symbolAllocator is null");
             this.idAllocator = requireNonNull(idAllocator, "idAllocator is null");
             this.session = requireNonNull(session, "session is null");
+            this.domainTranslator = new DomainTranslator(plannerContext.getMetadata());
         }
 
         public static Optional<PlanNode> rewriteWithIndex(
                 PlanNode planNode,
                 Set<Symbol> lookupSymbols,
-                SymbolAllocator symbolAllocator,
                 PlanNodeIdAllocator idAllocator,
                 PlannerContext plannerContext,
                 Session session)
         {
             AtomicBoolean success = new AtomicBoolean();
-            IndexSourceRewriter indexSourceRewriter = new IndexSourceRewriter(symbolAllocator, idAllocator, plannerContext, session);
+            IndexSourceRewriter indexSourceRewriter = new IndexSourceRewriter(idAllocator, plannerContext, session);
             PlanNode rewritten = SimplePlanRewriter.rewriteWith(indexSourceRewriter, planNode, new Context(lookupSymbols, success));
             if (success.get()) {
                 return Optional.of(rewritten);
@@ -291,7 +274,7 @@ public class IndexJoinOptimizer
         @Override
         public PlanNode visitTableScan(TableScanNode node, RewriteContext<Context> context)
         {
-            return planTableScan(node, BooleanLiteral.TRUE_LITERAL, context.get());
+            return planTableScan(node, Booleans.TRUE, context.get());
         }
 
         private PlanNode planTableScan(TableScanNode node, Expression predicate, Context context)
@@ -299,8 +282,7 @@ public class IndexJoinOptimizer
             DomainTranslator.ExtractionResult decomposedPredicate = DomainTranslator.getExtractionResult(
                     plannerContext,
                     session,
-                    predicate,
-                    symbolAllocator.getTypes());
+                    predicate);
 
             TupleDomain<ColumnHandle> simplifiedConstraint = decomposedPredicate.getTupleDomain()
                     .transformKeys(node.getAssignments()::get)
@@ -332,11 +314,10 @@ public class IndexJoinOptimizer
                     node.getAssignments());
 
             Expression resultingPredicate = combineConjuncts(
-                    plannerContext.getMetadata(),
-                    domainTranslator.toPredicate(session, resolvedIndex.getUnresolvedTupleDomain().transformKeys(inverseAssignments::get)),
+                    domainTranslator.toPredicate(resolvedIndex.getUnresolvedTupleDomain().transformKeys(inverseAssignments::get)),
                     decomposedPredicate.getRemainingExpression());
 
-            if (!resultingPredicate.equals(TRUE_LITERAL)) {
+            if (!resultingPredicate.equals(TRUE)) {
                 // todo it is likely we end up with redundant filters here because the predicate push down has already been run... the fix is to run predicate push down again
                 source = new FilterNode(idAllocator.getNextId(), source, resultingPredicate);
             }
@@ -350,11 +331,11 @@ public class IndexJoinOptimizer
             // Rewrite the lookup symbols in terms of only the pre-projected symbols that have direct translations
             Set<Symbol> newLookupSymbols = context.get().getLookupSymbols().stream()
                     .map(node.getAssignments()::get)
-                    .filter(SymbolReference.class::isInstance)
+                    .filter(Reference.class::isInstance)
                     .map(Symbol::from)
                     .collect(toImmutableSet());
 
-            if (newLookupSymbols.isEmpty()) {
+            if (newLookupSymbols.size() != context.get().getLookupSymbols().size()) {
                 return node;
             }
 
@@ -376,10 +357,8 @@ public class IndexJoinOptimizer
         {
             if (!node.getWindowFunctions().values().stream()
                     .map(Function::getResolvedFunction)
-                    .map(ResolvedFunction::getSignature)
-                    .map(BoundSignature::getName)
-                    .map(QualifiedName::of)
-                    .allMatch(name -> plannerContext.getMetadata().isAggregationFunction(session, name))) {
+                    .map(ResolvedFunction::functionKind)
+                    .allMatch(AGGREGATE::equals)) {
                 return node;
             }
 
@@ -391,20 +370,17 @@ public class IndexJoinOptimizer
             // Only RANGE frame type currently supported for aggregation functions because it guarantees the
             // same value for each peer group.
             // ROWS frame type requires the ordering to be fully deterministic (e.g. deterministically sorted on all columns)
-            if (node.getFrames().stream().map(WindowNode.Frame::getType).anyMatch(type -> type != WindowFrame.Type.RANGE)) { // TODO: extract frames of type RANGE and allow optimization on them
+            if (node.getFrames().stream().map(WindowNode.Frame::getType).anyMatch(type -> type != RANGE)) { // TODO: extract frames of type RANGE and allow optimization on them
                 return node;
             }
 
             // Lookup symbols can only be passed through if they are part of the partitioning
-            Set<Symbol> partitionByLookupSymbols = context.get().getLookupSymbols().stream()
-                    .filter(node.getPartitionBy()::contains)
-                    .collect(toImmutableSet());
 
-            if (partitionByLookupSymbols.isEmpty()) {
+            if (!node.getPartitionBy().containsAll(context.get().getLookupSymbols())) {
                 return node;
             }
 
-            return context.defaultRewrite(node, new Context(partitionByLookupSymbols, context.get().getSuccess()));
+            return context.defaultRewrite(node, new Context(context.get().getLookupSymbols(), context.get().getSuccess()));
         }
 
         @Override
@@ -417,15 +393,11 @@ public class IndexJoinOptimizer
         public PlanNode visitIndexJoin(IndexJoinNode node, RewriteContext<Context> context)
         {
             // Lookup symbols can only be passed through the probe side of an index join
-            Set<Symbol> probeLookupSymbols = context.get().getLookupSymbols().stream()
-                    .filter(node.getProbeSource().getOutputSymbols()::contains)
-                    .collect(toImmutableSet());
-
-            if (probeLookupSymbols.isEmpty()) {
+            if (!node.getProbeSource().getOutputSymbols().containsAll(context.get().getLookupSymbols())) {
                 return node;
             }
 
-            PlanNode rewrittenProbeSource = context.rewrite(node.getProbeSource(), new Context(probeLookupSymbols, context.get().getSuccess()));
+            PlanNode rewrittenProbeSource = context.rewrite(node.getProbeSource(), new Context(context.get().getLookupSymbols(), context.get().getSuccess()));
 
             PlanNode source = node;
             if (rewrittenProbeSource != node.getProbeSource()) {
@@ -439,15 +411,11 @@ public class IndexJoinOptimizer
         public PlanNode visitAggregation(AggregationNode node, RewriteContext<Context> context)
         {
             // Lookup symbols can only be passed through if they are part of the group by columns
-            Set<Symbol> groupByLookupSymbols = context.get().getLookupSymbols().stream()
-                    .filter(node.getGroupingKeys()::contains)
-                    .collect(toImmutableSet());
-
-            if (groupByLookupSymbols.isEmpty()) {
+            if (!node.getGroupingKeys().containsAll(context.get().getLookupSymbols())) {
                 return node;
             }
 
-            return context.defaultRewrite(node, new Context(groupByLookupSymbols, context.get().getSuccess()));
+            return context.defaultRewrite(node, new Context(context.get().getLookupSymbols(), context.get().getSuccess()));
         }
 
         @Override
@@ -512,7 +480,7 @@ public class IndexJoinOptimizer
             public Map<Symbol, Symbol> visitProject(ProjectNode node, Set<Symbol> lookupSymbols)
             {
                 // Map from output Symbols to source Symbols
-                Map<Symbol, Symbol> directSymbolTranslationOutputMap = Maps.transformValues(Maps.filterValues(node.getAssignments().getMap(), SymbolReference.class::isInstance), Symbol::from);
+                Map<Symbol, Symbol> directSymbolTranslationOutputMap = Maps.transformValues(Maps.filterValues(node.getAssignments().getMap(), Reference.class::isInstance), Symbol::from);
                 Map<Symbol, Symbol> outputToSourceMap = lookupSymbols.stream()
                         .filter(directSymbolTranslationOutputMap.keySet()::contains)
                         .collect(toImmutableMap(identity(), directSymbolTranslationOutputMap::get));

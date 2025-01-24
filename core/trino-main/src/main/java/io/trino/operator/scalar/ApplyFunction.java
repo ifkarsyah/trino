@@ -16,10 +16,10 @@ package io.trino.operator.scalar;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Primitives;
 import io.trino.annotation.UsedByGeneratedCode;
-import io.trino.metadata.BoundSignature;
-import io.trino.metadata.FunctionMetadata;
-import io.trino.metadata.Signature;
 import io.trino.metadata.SqlScalarFunction;
+import io.trino.spi.function.BoundSignature;
+import io.trino.spi.function.FunctionMetadata;
+import io.trino.spi.function.Signature;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeSignature;
 import io.trino.sql.gen.lambda.UnaryFunctionInterface;
@@ -45,9 +45,8 @@ public final class ApplyFunction
 
     private ApplyFunction()
     {
-        super(FunctionMetadata.scalarBuilder()
+        super(FunctionMetadata.scalarBuilder("apply")
                 .signature(Signature.builder()
-                        .name("apply")
                         .typeVariable("T")
                         .typeVariable("U")
                         .returnType(new TypeSignature("U"))
@@ -62,11 +61,11 @@ public final class ApplyFunction
     }
 
     @Override
-    protected ScalarFunctionImplementation specialize(BoundSignature boundSignature)
+    protected SpecializedSqlScalarFunction specialize(BoundSignature boundSignature)
     {
         Type argumentType = boundSignature.getArgumentTypes().get(0);
         Type returnType = boundSignature.getReturnType();
-        return new ChoicesScalarFunctionImplementation(
+        return new ChoicesSpecializedSqlScalarFunction(
                 boundSignature,
                 NULLABLE_RETURN,
                 ImmutableList.of(BOXED_NULLABLE, FUNCTION),

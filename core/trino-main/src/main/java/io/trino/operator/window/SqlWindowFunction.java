@@ -13,11 +13,12 @@
  */
 package io.trino.operator.window;
 
-import io.trino.metadata.BoundSignature;
-import io.trino.metadata.FunctionDependencies;
-import io.trino.metadata.FunctionMetadata;
-import io.trino.metadata.Signature;
 import io.trino.metadata.SqlFunction;
+import io.trino.spi.function.BoundSignature;
+import io.trino.spi.function.FunctionDependencies;
+import io.trino.spi.function.FunctionMetadata;
+import io.trino.spi.function.Signature;
+import io.trino.spi.function.WindowFunctionSupplier;
 
 import java.util.Optional;
 
@@ -29,10 +30,10 @@ public class SqlWindowFunction
     private final WindowFunctionSupplier supplier;
     private final FunctionMetadata functionMetadata;
 
-    public SqlWindowFunction(Signature signature, Optional<String> description, boolean deprecated, WindowFunctionSupplier supplier)
+    public SqlWindowFunction(String name, Signature signature, Optional<String> description, boolean deprecated, WindowFunctionSupplier supplier)
     {
         this.supplier = requireNonNull(supplier, "supplier is null");
-        FunctionMetadata.Builder functionMetadata = FunctionMetadata.windowBuilder()
+        FunctionMetadata.Builder functionMetadata = FunctionMetadata.windowBuilder(name)
                 .signature(signature);
         if (description.isPresent()) {
             functionMetadata.description(description.get());

@@ -13,14 +13,17 @@
  */
 package io.trino.sql.planner;
 
+import io.trino.metadata.ResolvedFunction;
 import io.trino.sql.analyzer.Analysis;
 import io.trino.sql.analyzer.CanonicalizationAware;
 import io.trino.sql.analyzer.ResolvedField;
 import io.trino.sql.analyzer.Scope;
 import io.trino.sql.tree.Expression;
+import io.trino.sql.tree.FunctionCall;
 import io.trino.sql.tree.Identifier;
 import io.trino.sql.tree.Node;
 
+import java.util.Optional;
 import java.util.OptionalInt;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -122,9 +125,7 @@ public class ScopeAware<T extends Node>
      */
     private Boolean scopeAwareComparison(Node left, Node right)
     {
-        if (left instanceof Expression && right instanceof Expression) {
-            Expression leftExpression = (Expression) left;
-            Expression rightExpression = (Expression) right;
+        if (left instanceof Expression leftExpression && right instanceof Expression rightExpression) {
             if (analysis.isColumnReference(leftExpression) && analysis.isColumnReference(rightExpression)) {
                 ResolvedField leftField = analysis.getResolvedField(leftExpression);
                 ResolvedField rightField = analysis.getResolvedField(rightExpression);
@@ -138,13 +139,21 @@ public class ScopeAware<T extends Node>
                 }
                 // For references that come from the current query scope or an outer scope of the current
                 // expression, compare by resolved field
-                else if (!leftFieldInSubqueryScope && !rightFieldInSubqueryScope) {
+                if (!leftFieldInSubqueryScope && !rightFieldInSubqueryScope) {
                     return leftField.getFieldId().equals(rightField.getFieldId());
                 }
                 // References come from different scopes
                 return false;
             }
-            else if (leftExpression instanceof Identifier && rightExpression instanceof Identifier) {
+            if (left instanceof FunctionCall && right instanceof FunctionCall) {
+                Optional<ResolvedFunction> resolvedLeft = analysis.getResolvedFunction(left);
+                Optional<ResolvedFunction> resolvedRight = analysis.getResolvedFunction(right);
+
+                if ((resolvedLeft.isPresent() && !resolvedLeft.get().deterministic()) || (resolvedRight.isPresent() && !resolvedRight.get().deterministic())) {
+                    return left == right;
+                }
+            }
+            if (leftExpression instanceof Identifier && rightExpression instanceof Identifier) {
                 return treeEqual(leftExpression, rightExpression, CanonicalizationAware::canonicalizationAwareComparison);
             }
         }
@@ -158,8 +167,7 @@ public class ScopeAware<T extends Node>
 
     private OptionalInt scopeAwareHash(Node node)
     {
-        if (node instanceof Expression) {
-            Expression expression = (Expression) node;
+        if (node instanceof Expression expression) {
             if (analysis.isColumnReference(expression)) {
                 ResolvedField field = analysis.getResolvedField(expression);
 
@@ -170,10 +178,10 @@ public class ScopeAware<T extends Node>
 
                 return OptionalInt.of(field.getFieldId().hashCode());
             }
-            else if (expression instanceof Identifier) {
+            if (expression instanceof Identifier) {
                 return OptionalInt.of(treeHash(expression, CanonicalizationAware::canonicalizationAwareHash));
             }
-            else if (node.getChildren().isEmpty()) {
+            if (node.getChildren().isEmpty()) {
                 // Calculate shallow hash since node doesn't have any children
                 return OptionalInt.of(expression.hashCode());
             }

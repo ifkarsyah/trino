@@ -17,20 +17,23 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.trino.FeaturesConfig;
 import io.trino.client.NodeVersion;
-import io.trino.operator.scalar.ChoicesScalarFunctionImplementation;
-import io.trino.operator.scalar.ScalarFunctionImplementation;
+import io.trino.operator.scalar.ChoicesSpecializedSqlScalarFunction;
+import io.trino.operator.scalar.SpecializedSqlScalarFunction;
+import io.trino.spi.function.BoundSignature;
+import io.trino.spi.function.FunctionMetadata;
 import io.trino.spi.function.OperatorType;
 import io.trino.spi.function.ScalarFunction;
+import io.trino.spi.function.Signature;
 import io.trino.spi.function.SqlType;
+import io.trino.spi.function.TypeVariableConstraint;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.StandardTypes;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeOperators;
 import io.trino.spi.type.TypeSignature;
-import io.trino.sql.tree.QualifiedName;
 import io.trino.type.BlockTypeOperators;
 import io.trino.type.UnknownType;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.lang.invoke.MethodHandles;
 import java.util.Arrays;
@@ -39,13 +42,13 @@ import java.util.Set;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static io.trino.SessionTestUtils.TEST_SESSION;
+import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
 import static io.trino.metadata.InternalFunctionBundle.extractFunctions;
-import static io.trino.metadata.Signature.mangleOperatorName;
-import static io.trino.metadata.Signature.unmangleOperator;
-import static io.trino.metadata.TypeVariableConstraint.typeVariable;
+import static io.trino.metadata.OperatorNameUtil.unmangleOperator;
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.NEVER_NULL;
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.FAIL_ON_NULL;
+import static io.trino.spi.function.OperatorType.CAST;
+import static io.trino.spi.function.TypeVariableConstraint.typeVariable;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DecimalType.createDecimalType;
 import static io.trino.spi.type.HyperLogLogType.HYPER_LOG_LOG;
@@ -53,28 +56,26 @@ import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypeSignatures;
 import static io.trino.sql.analyzer.TypeSignatureTranslator.parseTypeSignature;
 import static java.util.Collections.nCopies;
 import static java.util.stream.Collectors.toList;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
 
 public class TestGlobalFunctionCatalog
 {
     @Test
     public void testIdentityCast()
     {
-        BoundSignature exactOperator = new TestingFunctionResolution().getCoercion(HYPER_LOG_LOG, HYPER_LOG_LOG).getSignature();
-        assertEquals(exactOperator, new BoundSignature(mangleOperatorName(OperatorType.CAST), HYPER_LOG_LOG, ImmutableList.of(HYPER_LOG_LOG)));
+        BoundSignature exactOperator = new TestingFunctionResolution().getCoercion(HYPER_LOG_LOG, HYPER_LOG_LOG).signature();
+        assertThat(exactOperator).isEqualTo(new BoundSignature(builtinFunctionName(CAST), HYPER_LOG_LOG, ImmutableList.of(HYPER_LOG_LOG)));
     }
 
     @Test
     public void testExactMatchBeforeCoercion()
     {
         TestingFunctionResolution functionResolution = new TestingFunctionResolution();
-        Metadata metadata = functionResolution.getMetadata();
         boolean foundOperator = false;
-        for (FunctionMetadata function : listOperators(metadata)) {
-            OperatorType operatorType = unmangleOperator(function.getSignature().getName());
-            if (operatorType == OperatorType.CAST || operatorType == OperatorType.SATURATED_FLOOR_CAST) {
+        for (FunctionMetadata function : listOperators(functionResolution)) {
+            OperatorType operatorType = unmangleOperator(function.getCanonicalName());
+            if (operatorType == CAST || operatorType == OperatorType.SATURATED_FLOOR_CAST) {
                 continue;
             }
             if (!function.getSignature().getTypeVariableConstraints().isEmpty()) {
@@ -86,11 +87,11 @@ public class TestGlobalFunctionCatalog
             List<Type> argumentTypes = function.getSignature().getArgumentTypes().stream()
                     .map(functionResolution.getPlannerContext().getTypeManager()::getType)
                     .collect(toImmutableList());
-            BoundSignature exactOperator = functionResolution.resolveOperator(operatorType, argumentTypes).getSignature();
-            assertEquals(exactOperator.toSignature(), function.getSignature());
+            BoundSignature exactOperator = functionResolution.resolveOperator(operatorType, argumentTypes).signature();
+            assertThat(exactOperator.toSignature()).isEqualTo(function.getSignature());
             foundOperator = true;
         }
-        assertTrue(foundOperator);
+        assertThat(foundOperator).isTrue();
     }
 
     @Test
@@ -99,7 +100,10 @@ public class TestGlobalFunctionCatalog
         FunctionBundle functionBundle = extractFunctions(CustomAdd.class);
 
         TypeOperators typeOperators = new TypeOperators();
-        GlobalFunctionCatalog globalFunctionCatalog = new GlobalFunctionCatalog();
+        GlobalFunctionCatalog globalFunctionCatalog = new GlobalFunctionCatalog(
+                () -> { throw new UnsupportedOperationException(); },
+                () -> { throw new UnsupportedOperationException(); },
+                () -> { throw new UnsupportedOperationException(); });
         globalFunctionCatalog.addFunctions(SystemFunctionBundle.create(new FeaturesConfig(), typeOperators, new BlockTypeOperators(typeOperators), NodeVersion.UNKNOWN));
         globalFunctionCatalog.addFunctions(functionBundle);
         assertThatThrownBy(() -> globalFunctionCatalog.addFunctions(functionBundle))
@@ -113,7 +117,10 @@ public class TestGlobalFunctionCatalog
         FunctionBundle functions = extractFunctions(ScalarSum.class);
 
         TypeOperators typeOperators = new TypeOperators();
-        GlobalFunctionCatalog globalFunctionCatalog = new GlobalFunctionCatalog();
+        GlobalFunctionCatalog globalFunctionCatalog = new GlobalFunctionCatalog(
+                () -> { throw new UnsupportedOperationException(); },
+                () -> { throw new UnsupportedOperationException(); },
+                () -> { throw new UnsupportedOperationException(); });
         globalFunctionCatalog.addFunctions(SystemFunctionBundle.create(new FeaturesConfig(), typeOperators, new BlockTypeOperators(typeOperators), NodeVersion.UNKNOWN));
         assertThatThrownBy(() -> globalFunctionCatalog.addFunctions(functions))
                 .isInstanceOf(IllegalStateException.class)
@@ -262,14 +269,14 @@ public class TestGlobalFunctionCatalog
                 .failsWithMessage("Could not choose a best candidate operator. Explicit type casts must be added.");
     }
 
-    private static List<FunctionMetadata> listOperators(Metadata metadata)
+    private static List<FunctionMetadata> listOperators(TestingFunctionResolution functionResolution)
     {
         Set<String> operatorNames = Arrays.stream(OperatorType.values())
-                .map(Signature::mangleOperatorName)
+                .map(OperatorNameUtil::mangleOperatorName)
                 .collect(toImmutableSet());
 
-        return metadata.listFunctions(TEST_SESSION).stream()
-                .filter(function -> operatorNames.contains(function.getSignature().getName()))
+        return functionResolution.listGlobalFunctions().stream()
+                .filter(function -> operatorNames.contains(function.getCanonicalName()))
                 .collect(toImmutableList());
     }
 
@@ -321,9 +328,9 @@ public class TestGlobalFunctionCatalog
 
         public ResolveFunctionAssertion returns(Signature.Builder functionSignature)
         {
-            Signature expectedSignature = functionSignature.name(TEST_FUNCTION_NAME).build();
+            Signature expectedSignature = functionSignature.build();
             Signature actualSignature = resolveSignature().toSignature();
-            assertEquals(actualSignature, expectedSignature);
+            assertThat(actualSignature).isEqualTo(expectedSignature);
             return this;
         }
 
@@ -338,26 +345,25 @@ public class TestGlobalFunctionCatalog
         private BoundSignature resolveSignature()
         {
             return new TestingFunctionResolution(createFunctionsFromSignatures())
-                    .resolveFunction(QualifiedName.of(TEST_FUNCTION_NAME), fromTypeSignatures(parameterTypes))
-                    .getSignature();
+                    .resolveFunction(TEST_FUNCTION_NAME, fromTypeSignatures(parameterTypes))
+                    .signature();
         }
 
         private InternalFunctionBundle createFunctionsFromSignatures()
         {
             ImmutableList.Builder<SqlFunction> functions = ImmutableList.builder();
             for (Signature.Builder functionSignature : functionSignatures) {
-                Signature signature = functionSignature.name(TEST_FUNCTION_NAME).build();
-                FunctionMetadata functionMetadata = FunctionMetadata.scalarBuilder()
-                        .signature(signature)
+                FunctionMetadata functionMetadata = FunctionMetadata.scalarBuilder(TEST_FUNCTION_NAME)
+                        .signature(functionSignature.build())
                         .nondeterministic()
                         .description("testing function that does nothing")
                         .build();
                 functions.add(new SqlScalarFunction(functionMetadata)
                 {
                     @Override
-                    protected ScalarFunctionImplementation specialize(BoundSignature boundSignature)
+                    protected SpecializedSqlScalarFunction specialize(BoundSignature boundSignature)
                     {
-                        return new ChoicesScalarFunctionImplementation(
+                        return new ChoicesSpecializedSqlScalarFunction(
                                 boundSignature,
                                 FAIL_ON_NULL,
                                 nCopies(boundSignature.getArity(), NEVER_NULL),

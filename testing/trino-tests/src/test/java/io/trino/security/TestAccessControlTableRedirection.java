@@ -31,7 +31,7 @@ import io.trino.spi.security.TrinoPrincipal;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 import java.util.Optional;
@@ -77,9 +77,8 @@ public class TestAccessControlTableRedirection
             SCHEMA_NAME,
             ImmutableSet.of(REDIRECTION_SOURCE_TABLE_NAME, REDIRECTION_TARGET_TABLE_NAME));
 
-    private static final Map<SchemaTableName, SchemaTableName> TABLE_REDIRECTIONS = ImmutableMap.<SchemaTableName, SchemaTableName>builder()
-            .put(schemaTableName(SCHEMA_NAME, REDIRECTION_SOURCE_TABLE_NAME), schemaTableName(SCHEMA_NAME, REDIRECTION_TARGET_TABLE_NAME))
-            .buildOrThrow();
+    private static final Map<SchemaTableName, SchemaTableName> TABLE_REDIRECTIONS = ImmutableMap.of(
+            schemaTableName(SCHEMA_NAME, REDIRECTION_SOURCE_TABLE_NAME), schemaTableName(SCHEMA_NAME, REDIRECTION_TARGET_TABLE_NAME));
 
     @Override
     protected QueryRunner createQueryRunner()
@@ -96,14 +95,10 @@ public class TestAccessControlTableRedirection
                             .toInstance(new DisabledSystemSecurityMetadata()
                             {
                                 @Override
-                                public void grantTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
-                                {
-                                }
+                                public void grantTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption) {}
 
                                 @Override
-                                public void revokeTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
-                                {
-                                }
+                                public void revokeTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption) {}
 
                                 @Override
                                 public boolean roleExists(Session session, String role)
@@ -112,14 +107,10 @@ public class TestAccessControlTableRedirection
                                 }
 
                                 @Override
-                                public void setTableOwner(Session session, CatalogSchemaTableName table, TrinoPrincipal principal)
-                                {
-                                }
+                                public void setTableOwner(Session session, CatalogSchemaTableName table, TrinoPrincipal principal) {}
 
                                 @Override
-                                public void denyTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee)
-                                {
-                                }
+                                public void denyTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee) {}
                             });
                 })
                 .build();
@@ -257,7 +248,6 @@ public class TestAccessControlTableRedirection
     {
         return MockConnectorFactory.builder()
                 .withListTables((session, schemaName) -> SCHEMA_TABLE_MAPPING.getOrDefault(schemaName, ImmutableSet.of()).stream()
-                        .map(name -> new SchemaTableName(schemaName, name))
                         .collect(toImmutableList()))
                 .withGetTableHandle((session, tableName) -> {
                     if (SCHEMA_TABLE_MAPPING.getOrDefault(tableName.getSchemaName(), ImmutableSet.of()).contains(tableName.getTableName())
@@ -266,9 +256,9 @@ public class TestAccessControlTableRedirection
                     }
                     return null;
                 })
-                .withGetViews(((connectorSession, prefix) -> ImmutableMap.of()))
-                .withRedirectTable(((connectorSession, schemaTableName) -> Optional.ofNullable(TABLE_REDIRECTIONS.get(schemaTableName))
-                        .map(target -> new CatalogSchemaTableName(CATALOG_NAME, target))))
+                .withGetViews((connectorSession, prefix) -> ImmutableMap.of())
+                .withRedirectTable((connectorSession, schemaTableName) -> Optional.ofNullable(TABLE_REDIRECTIONS.get(schemaTableName))
+                        .map(target -> new CatalogSchemaTableName(CATALOG_NAME, target)))
                 .withGetColumns(schemaTableName -> {
                     if (REDIRECTION_TARGET_SCHEMA_TABLE_NAME.equals(schemaTableName)) {
                         return ImmutableList.of(new ColumnMetadata(ID_COLUMN_NAME, INTEGER), new ColumnMetadata(DATA_COLUMN_NAME, VARCHAR));

@@ -15,8 +15,9 @@ package io.trino.plugin.kafka;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import io.trino.plugin.kafka.schema.file.FileTableDescriptionSupplier;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -34,14 +35,15 @@ public class TestKafkaConfig
     public void testDefaults()
     {
         assertRecordedDefaults(recordDefaults(KafkaConfig.class)
-                .setNodes("")
+                .setNodes(ImmutableSet.of())
                 .setKafkaBufferSize("64kB")
                 .setDefaultSchema("default")
                 .setTableDescriptionSupplier(FileTableDescriptionSupplier.NAME)
                 .setHideInternalColumns(true)
                 .setMessagesPerSplit(100_000)
                 .setTimestampUpperBoundPushDownEnabled(false)
-                .setResourceConfigFiles(List.of()));
+                .setResourceConfigFiles(List.of())
+                .setInternalFieldPrefix("_"));
     }
 
     @Test
@@ -60,17 +62,19 @@ public class TestKafkaConfig
                 .put("kafka.messages-per-split", "1")
                 .put("kafka.timestamp-upper-bound-force-push-down-enabled", "true")
                 .put("kafka.config.resources", resource1.toString() + "," + resource2.toString())
+                .put("kafka.internal-column-prefix", "the_most_unexpected_prefix_")
                 .buildOrThrow();
 
         KafkaConfig expected = new KafkaConfig()
                 .setDefaultSchema("kafka")
                 .setTableDescriptionSupplier("test")
-                .setNodes("localhost:12345, localhost:23456")
+                .setNodes(ImmutableSet.of("localhost:12345", "localhost:23456"))
                 .setKafkaBufferSize("1MB")
                 .setHideInternalColumns(false)
                 .setMessagesPerSplit(1)
                 .setTimestampUpperBoundPushDownEnabled(true)
-                .setResourceConfigFiles(ImmutableList.of(resource1.toString(), resource2.toString()));
+                .setResourceConfigFiles(ImmutableList.of(resource1.toString(), resource2.toString()))
+                .setInternalFieldPrefix("the_most_unexpected_prefix_");
 
         assertFullMapping(properties, expected);
     }

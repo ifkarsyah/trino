@@ -15,29 +15,28 @@ package io.trino.plugin.hive;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.SizeOf;
-import io.trino.plugin.hive.metastore.Column;
+import io.trino.metastore.Column;
+import io.trino.metastore.HiveType;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.type.Type;
-import org.openjdk.jol.info.ClassLayout;
 
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.slice.SizeOf.sizeOf;
+import static io.trino.metastore.HiveType.HIVE_INT;
+import static io.trino.metastore.HiveType.HIVE_LONG;
+import static io.trino.metastore.HiveType.HIVE_STRING;
 import static io.trino.plugin.hive.HiveColumnHandle.ColumnType.PARTITION_KEY;
 import static io.trino.plugin.hive.HiveColumnHandle.ColumnType.SYNTHESIZED;
-import static io.trino.plugin.hive.HiveType.HIVE_INT;
-import static io.trino.plugin.hive.HiveType.HIVE_LONG;
-import static io.trino.plugin.hive.HiveType.HIVE_STRING;
-import static io.trino.plugin.hive.HiveType.toHiveType;
-import static io.trino.plugin.hive.HiveUpdateProcessor.getUpdateRowIdColumnHandle;
 import static io.trino.plugin.hive.acid.AcidSchema.ACID_ROW_ID_ROW_TYPE;
+import static io.trino.plugin.hive.util.HiveTypeTranslator.toHiveType;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS;
@@ -52,7 +51,7 @@ import static java.util.Objects.requireNonNull;
 public class HiveColumnHandle
         implements ColumnHandle
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(HiveColumnHandle.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(HiveColumnHandle.class);
 
     public static final int PATH_COLUMN_INDEX = -11;
     public static final String PATH_COLUMN_NAME = "$path";
@@ -240,7 +239,7 @@ public class HiveColumnHandle
         }
         HiveColumnHandle other = (HiveColumnHandle) obj;
         return Objects.equals(this.baseColumnName, other.baseColumnName) &&
-                Objects.equals(this.baseHiveColumnIndex, other.baseHiveColumnIndex) &&
+                this.baseHiveColumnIndex == other.baseHiveColumnIndex &&
                 Objects.equals(this.baseHiveType, other.baseHiveType) &&
                 Objects.equals(this.baseType, other.baseType) &&
                 Objects.equals(this.hiveColumnProjectionInfo, other.hiveColumnProjectionInfo) &&
@@ -257,21 +256,12 @@ public class HiveColumnHandle
 
     public Column toMetastoreColumn()
     {
-        return new Column(name, getHiveType(), comment);
+        return new Column(name, getHiveType(), comment, ImmutableMap.of());
     }
 
-    public static HiveColumnHandle getDeleteRowIdColumnHandle()
+    public static HiveColumnHandle mergeRowIdColumnHandle()
     {
         return createBaseColumn(UPDATE_ROW_ID_COLUMN_NAME, UPDATE_ROW_ID_COLUMN_INDEX, toHiveType(ACID_ROW_ID_ROW_TYPE), ACID_ROW_ID_ROW_TYPE, SYNTHESIZED, Optional.empty());
-    }
-
-    public static HiveColumnHandle updateRowIdColumnHandle(List<HiveColumnHandle> columnHandles, List<ColumnHandle> updatedColumns)
-    {
-        requireNonNull(updatedColumns, "updatedColumns is null");
-        List<HiveColumnHandle> nonUpdatedColumnHandles = columnHandles.stream()
-                .filter(column -> !column.isPartitionKey() && !column.isHidden() && !updatedColumns.contains(column))
-                .collect(toImmutableList());
-        return getUpdateRowIdColumnHandle(nonUpdatedColumnHandles);
     }
 
     public static HiveColumnHandle pathColumnHandle()

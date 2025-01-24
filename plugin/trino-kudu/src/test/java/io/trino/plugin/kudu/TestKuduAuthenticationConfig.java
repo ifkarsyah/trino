@@ -14,7 +14,7 @@
 package io.trino.plugin.kudu;
 
 import com.google.common.collect.ImmutableMap;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
@@ -34,9 +34,7 @@ public class TestKuduAuthenticationConfig
     @Test
     public void testExplicitPropertyMappingsKerberos()
     {
-        Map<String, String> properties = ImmutableMap.<String, String>builder()
-                .put("kudu.authentication.type", "KERBEROS")
-                .buildOrThrow();
+        Map<String, String> properties = ImmutableMap.of("kudu.authentication.type", "KERBEROS");
 
         KuduAuthenticationConfig expected = new KuduAuthenticationConfig()
                 .setAuthenticationType(KuduAuthenticationConfig.KuduAuthenticationType.KERBEROS);

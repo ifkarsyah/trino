@@ -13,17 +13,17 @@
  */
 package io.trino.tests.product.iceberg;
 
+import com.google.inject.Inject;
 import com.google.inject.name.Named;
-import io.trino.tempto.BeforeTestWithContext;
+import io.trino.tempto.BeforeMethodWithContext;
 import io.trino.tempto.ProductTest;
 import io.trino.tempto.hadoop.hdfs.HdfsClient;
 import io.trino.tempto.query.QueryExecutionException;
 import org.testng.annotations.Test;
 
-import javax.inject.Inject;
-
+import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.tests.product.TestGroups.ICEBERG;
-import static io.trino.tests.product.hive.util.TemporaryHiveTable.randomTableSuffix;
+import static io.trino.tests.product.TestGroups.PROFILE_SPECIFIC_TESTS;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,16 +39,16 @@ public class TestCreateDropSchema
     @Named("databases.hive.warehouse_directory_path")
     private String warehouseDirectory;
 
-    @BeforeTestWithContext
+    @BeforeMethodWithContext
     public void useIceberg()
     {
         onTrino().executeQuery("USE iceberg.default");
     }
 
-    @Test(groups = ICEBERG)
+    @Test(groups = {ICEBERG, PROFILE_SPECIFIC_TESTS})
     public void testDropSchemaFiles()
     {
-        String schemaName = "schema_without_location_" + randomTableSuffix();
+        String schemaName = "schema_without_location_" + randomNameSuffix();
         String schemaDir = format("%s/%s.db/", warehouseDirectory, schemaName);
 
         onTrino().executeQuery(format("CREATE SCHEMA %s", schemaName));
@@ -57,10 +57,10 @@ public class TestCreateDropSchema
         assertFileExistence(schemaDir, false, "schema directory exists after dropping schema");
     }
 
-    @Test(groups = ICEBERG)
+    @Test(groups = {ICEBERG, PROFILE_SPECIFIC_TESTS})
     public void testDropSchemaFilesWithLocation()
     {
-        String schemaName = "schema_with_empty_location_" + randomTableSuffix();
+        String schemaName = "schema_with_empty_location_" + randomNameSuffix();
         String schemaDir = warehouseDirectory + "/schema-with-empty-location/";
 
         onTrino().executeQuery(format("CREATE SCHEMA %s WITH (location = '%s')", schemaName, schemaDir));
@@ -69,10 +69,10 @@ public class TestCreateDropSchema
         assertFileExistence(schemaDir, false, "schema directory exists after dropping schema");
     }
 
-    @Test(groups = ICEBERG) // specified location, external file in subdir
+    @Test(groups = {ICEBERG, PROFILE_SPECIFIC_TESTS}) // specified location, external file in subdir
     public void testDropWithExternalFilesInSubdirectory()
     {
-        String schemaName = "schema_with_nonempty_location_" + randomTableSuffix();
+        String schemaName = "schema_with_nonempty_location_" + randomNameSuffix();
         String schemaDir = warehouseDirectory + "/schema-with-nonempty-location/";
         // Use subdirectory to make sure file check is recursive
         String subDir = schemaDir + "subdir/";
@@ -90,27 +90,10 @@ public class TestCreateDropSchema
         hdfsClient.delete(schemaDir);
     }
 
-    @Test(groups = ICEBERG) // make sure empty directories are noticed as well
-    public void testDropSchemaFilesWithEmptyExternalSubdir()
-    {
-        String schemaName = "schema_with_empty_subdirectory_" + randomTableSuffix();
-        String schemaDir = format("%s/%s.db/", warehouseDirectory, schemaName);
-        String externalSubdir = schemaDir + "external-subdir/";
-
-        hdfsClient.createDirectory(externalSubdir);
-
-        onTrino().executeQuery("CREATE SCHEMA " + schemaName);
-        assertFileExistence(externalSubdir, true, "external subdirectory exists after creating schema");
-        onTrino().executeQuery("DROP SCHEMA " + schemaName);
-        assertFileExistence(externalSubdir, true, "external subdirectory exists after dropping schema");
-
-        hdfsClient.delete(schemaDir);
-    }
-
-    @Test(groups = ICEBERG) // default location, external file at top level
+    @Test(groups = {ICEBERG, PROFILE_SPECIFIC_TESTS}) // default location, external file at top level
     public void testDropWithExternalFiles()
     {
-        String schemaName = "schema_with_files_in_default_location_" + randomTableSuffix();
+        String schemaName = "schema_with_files_in_default_location_" + randomNameSuffix();
         String schemaDir = format("%s/%s.db/", warehouseDirectory, schemaName);
 
         // Create file in schema directory before creating schema

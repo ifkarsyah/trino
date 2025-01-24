@@ -14,27 +14,23 @@
 package io.trino.plugin.cassandra;
 
 import com.google.common.collect.ImmutableList;
+import io.trino.testing.QueryRunner;
 import io.trino.testing.sql.SqlExecutor;
 
-import java.security.SecureRandom;
 import java.util.List;
 import java.util.function.Function;
 
 import static com.google.common.base.Verify.verify;
-import static java.lang.Character.MAX_RADIX;
-import static java.lang.Math.abs;
-import static java.lang.Math.min;
+import static io.trino.testing.TestingNames.randomNameSuffix;
+import static io.trino.testing.assertions.Assert.assertEventually;
 import static java.lang.String.format;
 import static java.lang.String.join;
 import static java.util.stream.Collectors.joining;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestCassandraTable
         implements AutoCloseable
 {
-    private static final SecureRandom random = new SecureRandom();
-    // The suffix needs to be long enough to "prevent" collisions in practice. The length of 5 was proven not to be long enough
-    private static final int RANDOM_SUFFIX_LENGTH = 10;
-
     private final SqlExecutor sqlExecutor;
     private final String keyspace;
     private final String tableName;
@@ -48,8 +44,8 @@ public class TestCassandraTable
     // `48 - RANDOM_SUFFIX_LENGTH` for the exact value.
 
     public TestCassandraTable(
+            QueryRunner queryRunner,
             SqlExecutor sqlExecutor,
-            CassandraServer server,
             String keyspace,
             String namePrefix,
             List<ColumnDefinition> columnDefinitions,
@@ -57,7 +53,7 @@ public class TestCassandraTable
     {
         this.sqlExecutor = sqlExecutor;
         this.keyspace = keyspace;
-        this.tableName = namePrefix + randomTableSuffix();
+        this.tableName = namePrefix + randomNameSuffix();
         sqlExecutor.execute(format("CREATE TABLE %s.%s %s", keyspace, tableName, tableDefinition(columnDefinitions)));
         String columns = columnDefinitions.stream()
                 .map(columnDefinition -> columnDefinition.name)
@@ -68,8 +64,9 @@ public class TestCassandraTable
                 sqlExecutor.execute(format("INSERT INTO %s.%s (%s) VALUES (%s)", keyspace, tableName, columns, row));
             }
 
-            // Ensure that the currently created table is visible to other sessions (e.g. the session used in DistributedQueryRunner)
-            server.refreshSizeEstimates(keyspace, tableName);
+            // Ensure that the currently created table is visible to Trino
+            assertEventually(() -> assertThat(queryRunner.execute("SELECT * FROM %s.%s".formatted(keyspace, tableName)).getRowCount())
+                    .isEqualTo(rowsToInsert.size()));
         }
         catch (Exception e) {
             try (TestCassandraTable ignored = this) {
@@ -114,12 +111,6 @@ public class TestCassandraTable
     public void close()
     {
         sqlExecutor.execute("DROP TABLE " + getTableName());
-    }
-
-    private static String randomTableSuffix()
-    {
-        String randomSuffix = Long.toString(abs(random.nextLong()), MAX_RADIX);
-        return randomSuffix.substring(0, min(RANDOM_SUFFIX_LENGTH, randomSuffix.length()));
     }
 
     public static ColumnDefinition partitionColumn(String name, String type)

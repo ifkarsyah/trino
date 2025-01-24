@@ -15,39 +15,39 @@ package io.trino.sql.query;
 
 import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
-import io.trino.plugin.tpch.TpchConnectorFactory;
-import io.trino.testing.LocalQueryRunner;
+import io.trino.plugin.tpch.TpchPlugin;
+import io.trino.testing.QueryRunner;
+import io.trino.testing.StandaloneQueryRunner;
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
+import static io.trino.testing.TestingHandles.TEST_CATALOG_NAME;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestWith
 {
-    private static final String CATALOG = "local";
+    private final QueryAssertions assertions;
 
-    private QueryAssertions assertions;
-
-    @BeforeAll
-    public void init()
+    public TestWith()
     {
         Session session = testSessionBuilder()
-                .setCatalog(CATALOG)
+                .setCatalog(TEST_CATALOG_NAME)
                 .setSchema(TINY_SCHEMA_NAME)
                 .build();
 
-        LocalQueryRunner runner = LocalQueryRunner.builder(session)
-                .build();
+        QueryRunner runner = new StandaloneQueryRunner(session);
 
-        runner.createCatalog(CATALOG, new TpchConnectorFactory(1), ImmutableMap.of());
+        runner.installPlugin(new TpchPlugin());
+        runner.createCatalog(TEST_CATALOG_NAME, "tpch", ImmutableMap.of("tpch.splits-per-node", "1"));
 
         assertions = new QueryAssertions(runner);
     }
@@ -56,7 +56,6 @@ public class TestWith
     public void teardown()
     {
         assertions.close();
-        assertions = null;
     }
 
     @Test
@@ -69,7 +68,7 @@ public class TestWith
                 format(
                         "SELECT count(*) " +
                                 "FROM information_schema.columns " +
-                                "WHERE table_catalog = '%s' and table_schema = '%s' and table_name = 'nation' and column_name = 'row_number'", CATALOG, TINY_SCHEMA_NAME)))
+                                "WHERE table_catalog = '%s' and table_schema = '%s' and table_name = 'nation' and column_name = 'row_number'", TEST_CATALOG_NAME, TINY_SCHEMA_NAME)))
                 .matches("VALUES BIGINT '0'");
         assertions.execute("SELECT min(row_number) FROM nation");
 
@@ -84,8 +83,8 @@ public class TestWith
                 .matches("SELECT * FROM nation");
 
         // try access hidden column
-        assertThatThrownBy(() -> assertions.query("WITH t AS (TABLE nation) " +
+        assertThat(assertions.query("WITH t AS (TABLE nation) " +
                 "SELECT min(row_number) FROM t"))
-                .hasMessage("line 1:37: Column 'row_number' cannot be resolved");
+                .failure().hasMessage("line 1:37: Column 'row_number' cannot be resolved");
     }
 }

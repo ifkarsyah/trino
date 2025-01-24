@@ -14,38 +14,42 @@
 package io.trino.metadata;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import io.trino.connector.CatalogName;
+import com.google.common.collect.ImmutableMap;
 import io.trino.spi.HostAddress;
 import io.trino.spi.SplitWeight;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorSplit;
-import org.openjdk.jol.info.ClassLayout;
 
 import java.util.List;
+import java.util.Map;
 
+import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.MoreObjects.toStringHelper;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static java.util.Objects.requireNonNull;
 
 public final class Split
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(Split.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(Split.class);
 
-    private final CatalogName catalogName;
+    private final CatalogHandle catalogHandle;
     private final ConnectorSplit connectorSplit;
 
     @JsonCreator
     public Split(
-            @JsonProperty("catalogName") CatalogName catalogName,
+            @JsonProperty("catalogHandle") CatalogHandle catalogHandle,
             @JsonProperty("connectorSplit") ConnectorSplit connectorSplit)
     {
-        this.catalogName = requireNonNull(catalogName, "catalogName is null");
+        this.catalogHandle = requireNonNull(catalogHandle, "catalogHandle is null");
         this.connectorSplit = requireNonNull(connectorSplit, "connectorSplit is null");
     }
 
     @JsonProperty
-    public CatalogName getCatalogName()
+    public CatalogHandle getCatalogHandle()
     {
-        return catalogName;
+        return catalogHandle;
     }
 
     @JsonProperty
@@ -54,9 +58,10 @@ public final class Split
         return connectorSplit;
     }
 
-    public Object getInfo()
+    @JsonIgnore
+    public Map<String, String> getInfo()
     {
-        return connectorSplit.getInfo();
+        return firstNonNull(connectorSplit.getSplitInfo(), ImmutableMap.of());
     }
 
     public List<HostAddress> getAddresses()
@@ -78,7 +83,7 @@ public final class Split
     public String toString()
     {
         return toStringHelper(this)
-                .add("catalogName", catalogName)
+                .add("catalogHandle", catalogHandle)
                 .add("connectorSplit", connectorSplit)
                 .toString();
     }
@@ -86,7 +91,7 @@ public final class Split
     public long getRetainedSizeInBytes()
     {
         return INSTANCE_SIZE
-                + catalogName.getRetainedSizeInBytes()
+                + catalogHandle.getRetainedSizeInBytes()
                 + connectorSplit.getRetainedSizeInBytes();
     }
 }

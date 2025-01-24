@@ -17,8 +17,12 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import io.trino.Session;
 import io.trino.spi.TrinoException;
+import io.trino.spi.function.BoundSignature;
+import io.trino.spi.function.FunctionId;
+import io.trino.spi.function.LongVariableConstraint;
+import io.trino.spi.function.Signature;
+import io.trino.spi.function.TypeVariableConstraint;
 import io.trino.spi.type.NamedTypeSignature;
 import io.trino.spi.type.ParameterKind;
 import io.trino.spi.type.RowType;
@@ -67,12 +71,13 @@ import static java.util.stream.Collectors.toList;
  * bind to an orderable type)
  * <p>
  * This implementation has made assumptions. When any of the assumptions is not satisfied, it will fail loudly.
- * <p><ul>
+ * <ul>
  * <li>A type cannot have both type parameter and literal parameter.
  * <li>A literal parameter cannot be used across types. see {@link #checkNoLiteralVariableUsageAcrossTypes(TypeSignature, Map)}.
- * </ul><p>
+ * </ul>
+ * <p>
  * Here are some known implementation limitations:
- * <p><ul>
+ * <ul>
  * <li>Binding signature {@code (decimal(x,2))boolean} with arguments {@code decimal(1,0)} fails.
  * It should produce {@code decimal(3,1)}.
  * </ul>
@@ -82,7 +87,6 @@ public class SignatureBinder
     // 4 is chosen arbitrarily here. This limit is set to avoid having infinite loops in iterative solving.
     private static final int SOLVE_ITERATION_LIMIT = 4;
 
-    private final Session session;
     private final Metadata metadata;
     private final TypeManager typeManager;
     private final TypeCoercion typeCoercion;
@@ -90,10 +94,10 @@ public class SignatureBinder
     private final boolean allowCoercion;
     private final Map<String, TypeVariableConstraint> typeVariableConstraints;
 
-    SignatureBinder(Session session, Metadata metadata, TypeManager typeManager, Signature declaredSignature, boolean allowCoercion)
+    // this could use the function resolver instead of Metadata, but Metadata caches coercion resolution
+    SignatureBinder(Metadata metadata, TypeManager typeManager, Signature declaredSignature, boolean allowCoercion)
     {
         checkNoLiteralVariableUsageAcrossTypes(declaredSignature);
-        this.session = requireNonNull(session, "session is null");
         this.metadata = requireNonNull(metadata, "metadata is null");
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.typeCoercion = new TypeCoercion(typeManager::getType);
@@ -176,7 +180,6 @@ public class SignatureBinder
         TypeSignature boundReturnTypeSignature = applyBoundVariables(signature.getReturnType(), typeVariables);
 
         return Signature.builder()
-                .name(signature.getName())
                 .returnType(boundReturnTypeSignature)
                 .argumentTypes(boundArgumentSignatures)
                 .build();
@@ -425,7 +428,7 @@ public class SignatureBinder
             List<TypeSignature> formalTypeParameterTypeSignatures = formalTypeSignature.getTypeParametersAsTypeSignatures();
             resultBuilder.add(new FunctionSolver(
                     getLambdaArgumentTypeSignatures(formalTypeSignature),
-                    formalTypeParameterTypeSignatures.get(formalTypeParameterTypeSignatures.size() - 1),
+                    formalTypeParameterTypeSignatures.getLast(),
                     actualTypeSignatureProvider));
             return true;
         }
@@ -474,11 +477,9 @@ public class SignatureBinder
 
         ImmutableList.Builder<TypeSignature> formalTypeParameterTypeSignatures = ImmutableList.builder();
         for (TypeSignatureParameter formalTypeParameter : formalTypeSignature.getParameters()) {
-            Optional<TypeSignature> typeSignature = formalTypeParameter.getTypeSignatureOrNamedTypeSignature();
-            if (typeSignature.isEmpty()) {
-                throw new UnsupportedOperationException("Types with both type parameters and literal parameters at the same time are not supported");
-            }
-            formalTypeParameterTypeSignatures.add(typeSignature.get());
+            TypeSignature typeSignature = formalTypeParameter.getTypeSignatureOrNamedTypeSignature()
+                    .orElseThrow(() -> new UnsupportedOperationException("Types with both type parameters and literal parameters at the same time are not supported"));
+            formalTypeParameterTypeSignatures.add(typeSignature);
         }
 
         return appendConstraintSolvers(
@@ -646,7 +647,7 @@ public class SignatureBinder
 
         ImmutableList.Builder<TypeSignature> builder = ImmutableList.builder();
         builder.addAll(formalTypeSignatures);
-        TypeSignature lastTypeSignature = formalTypeSignatures.get(formalTypeSignatures.size() - 1);
+        TypeSignature lastTypeSignature = formalTypeSignatures.getLast();
         for (int i = 1; i < variableArityArgumentsCount; i++) {
             builder.add(lastTypeSignature);
         }
@@ -655,17 +656,12 @@ public class SignatureBinder
 
     private boolean satisfiesCoercion(RelationshipType relationshipType, Type actualType, TypeSignature constraintTypeSignature)
     {
-        switch (relationshipType) {
-            case EXACT:
-                return actualType.getTypeSignature().equals(constraintTypeSignature);
-            case IMPLICIT_COERCION:
-                return typeCoercion.canCoerce(actualType, typeManager.getType(constraintTypeSignature));
-            case EXPLICIT_COERCION_TO:
-                return canCast(actualType, typeManager.getType(constraintTypeSignature));
-            case EXPLICIT_COERCION_FROM:
-                return canCast(typeManager.getType(constraintTypeSignature), actualType);
-        }
-        throw new IllegalArgumentException("Unsupported relationshipType " + relationshipType);
+        return switch (relationshipType) {
+            case EXACT -> actualType.getTypeSignature().equals(constraintTypeSignature);
+            case IMPLICIT_COERCION -> typeCoercion.canCoerce(actualType, typeManager.getType(constraintTypeSignature));
+            case EXPLICIT_COERCION_TO -> canCast(actualType, typeManager.getType(constraintTypeSignature));
+            case EXPLICIT_COERCION_FROM -> canCast(typeManager.getType(constraintTypeSignature), actualType);
+        };
     }
 
     private boolean canCast(Type fromType, Type toType)
@@ -687,13 +683,11 @@ public class SignatureBinder
                 }
                 return true;
             }
-            else if (toType instanceof JsonType) {
+            if (toType instanceof JsonType) {
                 return fromType.getTypeParameters().stream()
                         .allMatch(fromTypeParameter -> canCast(fromTypeParameter, toType));
             }
-            else {
-                return false;
-            }
+            return false;
         }
         if (fromType instanceof JsonType) {
             if (toType instanceof RowType) {
@@ -702,7 +696,7 @@ public class SignatureBinder
             }
         }
         try {
-            metadata.getCoercion(session, fromType, toType);
+            metadata.getCoercion(fromType, toType);
             return true;
         }
         catch (TrinoException e) {
@@ -817,12 +811,9 @@ public class SignatureBinder
             if (orderableRequired && !type.isOrderable()) {
                 return false;
             }
-            if (requiredBaseName.isPresent() && !UNKNOWN.equals(type) && !requiredBaseName.get().equalsIgnoreCase(type.getBaseName())) {
-                // TODO: the case below should be properly handled:
-                // * `type` does not have the `requiredBaseName` but can be coerced to some type that has the `requiredBaseName`.
-                return false;
-            }
-            return true;
+            // TODO: the case below should be properly handled:
+            // * `type` does not have the `requiredBaseName` but can be coerced to some type that has the `requiredBaseName`.
+            return requiredBaseName.isEmpty() || UNKNOWN.equals(type) || requiredBaseName.get().equalsIgnoreCase(type.getBaseName());
         }
     }
 
@@ -1054,14 +1045,12 @@ public class SignatureBinder
         EXACT, IMPLICIT_COERCION, EXPLICIT_COERCION_TO, EXPLICIT_COERCION_FROM
     }
 
-    private static final class FunctionTypeVariables
+    private record FunctionTypeVariables(FunctionBinding functionBinding)
             implements TypeVariables
     {
-        private final FunctionBinding functionBinding;
-
-        public FunctionTypeVariables(FunctionBinding functionBinding)
+        private FunctionTypeVariables
         {
-            this.functionBinding = requireNonNull(functionBinding, "functionBinding is null");
+            requireNonNull(functionBinding, "functionBinding is null");
         }
 
         @Override

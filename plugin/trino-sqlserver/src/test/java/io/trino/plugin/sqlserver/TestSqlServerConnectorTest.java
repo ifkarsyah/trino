@@ -14,30 +14,26 @@
 package io.trino.plugin.sqlserver;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.sql.SqlExecutor;
 import io.trino.testing.sql.TestTable;
-import io.trino.testng.services.Flaky;
 import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.Map;
 
 import static io.trino.plugin.jdbc.JdbcWriteSessionProperties.NON_TRANSACTIONAL_INSERT;
 import static io.trino.plugin.sqlserver.SqlServerQueryRunner.CATALOG;
-import static io.trino.plugin.sqlserver.SqlServerQueryRunner.createSqlServerQueryRunner;
 import static io.trino.plugin.sqlserver.SqlServerSessionProperties.BULK_COPY_FOR_WRITE;
 import static io.trino.plugin.sqlserver.SqlServerSessionProperties.BULK_COPY_FOR_WRITE_LOCK_DESTINATION_TABLE;
-import static io.trino.testing.DataProviders.cartesianProduct;
-import static io.trino.testing.DataProviders.trueFalse;
-import static io.trino.testing.sql.TestTable.randomTableSuffix;
+import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
+import static java.util.Locale.ENGLISH;
 import static java.util.stream.Collectors.joining;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -51,7 +47,10 @@ public class TestSqlServerConnectorTest
             throws Exception
     {
         sqlServer = closeAfterClass(new TestingSqlServer());
-        return createSqlServerQueryRunner(sqlServer, ImmutableMap.of(), ImmutableMap.of(), REQUIRED_TPCH_TABLES);
+        return SqlServerQueryRunner.builder(sqlServer)
+                .addConnectorProperties(Map.of("sqlserver.stored-procedure-table-function-enabled", "true"))
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
     @Override
@@ -60,12 +59,18 @@ public class TestSqlServerConnectorTest
         return sqlServer::execute;
     }
 
-    @Flaky(issue = "fn_dblog() returns information only about the active portion of the transaction log, therefore it is flaky", match = ".*")
-    @Test(dataProvider = "doubleTrueFalse")
-    public void testCreateTableAsSelectWriteBulkiness(boolean bulkCopyForWrite, boolean bulkCopyLock)
-            throws SQLException
+    @Test
+    public void testCreateTableAsSelectWriteBulkiness()
     {
-        String table = "bulk_copy_ctas_" + randomTableSuffix();
+        testCreateTableAsSelectWriteBulkiness(true, true);
+        testCreateTableAsSelectWriteBulkiness(true, false);
+        testCreateTableAsSelectWriteBulkiness(false, true);
+        testCreateTableAsSelectWriteBulkiness(false, false);
+    }
+
+    private void testCreateTableAsSelectWriteBulkiness(boolean bulkCopyForWrite, boolean bulkCopyLock)
+    {
+        String table = "bulk_copy_ctas_" + randomNameSuffix();
         Session session = Session.builder(getSession())
                 .setCatalogSessionProperty(CATALOG, BULK_COPY_FOR_WRITE, Boolean.toString(bulkCopyForWrite))
                 .setCatalogSessionProperty(CATALOG, BULK_COPY_FOR_WRITE_LOCK_DESTINATION_TABLE, Boolean.toString(bulkCopyLock))
@@ -73,12 +78,7 @@ public class TestSqlServerConnectorTest
 
         // there should be enough rows in source table to minimal logging be enabled. `nation` table is too small.
         assertQuerySucceeds(session, format("CREATE TABLE %s as SELECT * FROM tpch.tiny.customer", table));
-
-        // check whether minimal logging was applied.
-        // Unlike fully logged operations, which use the transaction log to keep track of every row change,
-        // minimally logged operations keep track of extent allocations and meta-data changes only.
-        assertThat(getTableOperationsCount("LOP_INSERT_ROWS", table))
-                .isEqualTo(bulkCopyForWrite && bulkCopyLock ? 0 : 1500);
+        assertQuery("SELECT * FROM " + table, "SELECT * FROM customer");
 
         // check that there are no locks remaining on the target table after bulk copy
         assertQuery("SELECT count(*) FROM " + table, "SELECT count(*) FROM customer");
@@ -88,12 +88,24 @@ public class TestSqlServerConnectorTest
         assertUpdate("DROP TABLE " + table);
     }
 
-    @Flaky(issue = "fn_dblog() returns information only about the active portion of the transaction log, therefore it is flaky", match = ".*")
-    @Test(dataProvider = "tripleTrueFalse")
-    public void testInsertWriteBulkiness(boolean nonTransactionalInsert, boolean bulkCopyForWrite, boolean bulkCopyForWriteLockDestinationTable)
+    @Test
+    public void testInsertWriteBulkiness()
             throws SQLException
     {
-        String table = "bulk_copy_insert_" + randomTableSuffix();
+        testInsertWriteBulkiness(true, true, true);
+        testInsertWriteBulkiness(true, true, false);
+        testInsertWriteBulkiness(true, false, true);
+        testInsertWriteBulkiness(true, false, false);
+        testInsertWriteBulkiness(false, true, true);
+        testInsertWriteBulkiness(false, true, false);
+        testInsertWriteBulkiness(false, false, true);
+        testInsertWriteBulkiness(false, false, false);
+    }
+
+    private void testInsertWriteBulkiness(boolean nonTransactionalInsert, boolean bulkCopyForWrite, boolean bulkCopyForWriteLockDestinationTable)
+            throws SQLException
+    {
+        String table = "bulk_copy_insert_" + randomNameSuffix();
         assertQuerySucceeds(format("CREATE TABLE %s as SELECT * FROM tpch.tiny.customer WHERE 0 = 1", table));
         Session session = Session.builder(getSession())
                 .setCatalogSessionProperty(CATALOG, NON_TRANSACTIONAL_INSERT, Boolean.toString(nonTransactionalInsert))
@@ -103,6 +115,7 @@ public class TestSqlServerConnectorTest
 
         // there should be enough rows in source table to minimal logging be enabled. `nation` table is too small.
         assertQuerySucceeds(session, format("INSERT INTO %s SELECT * FROM tpch.tiny.customer", table));
+        assertQuery("SELECT * FROM " + table, "SELECT * FROM customer");
 
         // check whether minimal logging was applied.
         // Unlike fully logged operations, which use the transaction log to keep track of every row change,
@@ -118,8 +131,17 @@ public class TestSqlServerConnectorTest
         assertUpdate("DROP TABLE " + table);
     }
 
-    @Test(dataProvider = "timestampTypes")
-    public void testInsertWriteBulkinessWithTimestamps(String timestampType)
+    @Test
+    public void testInsertWriteBulkinessWithTimestamps()
+    {
+        testInsertWriteBulkinessWithTimestamps("timestamp");
+        testInsertWriteBulkinessWithTimestamps("timestamp(3)");
+        testInsertWriteBulkinessWithTimestamps("timestamp(6)");
+        testInsertWriteBulkinessWithTimestamps("timestamp(9)");
+        testInsertWriteBulkinessWithTimestamps("timestamp(12)");
+    }
+
+    private void testInsertWriteBulkinessWithTimestamps(String timestampType)
     {
         Session session = Session.builder(getSession())
                 .setCatalogSessionProperty(CATALOG, BULK_COPY_FOR_WRITE, "true")
@@ -151,6 +173,60 @@ public class TestSqlServerConnectorTest
         }
     }
 
+    // TODO move test to BaseConnectorTest https://github.com/trinodb/trino/issues/14517
+    @Test
+    public void testCreateAndDropTableWithSpecialCharacterName()
+    {
+        for (String tableName : testTableNameTestData()) {
+            String tableNameInSql = "\"" + tableName.replace("\"", "\"\"") + "\"";
+            // Until https://github.com/trinodb/trino/issues/17 the table name is effectively lowercase
+            tableName = tableName.toLowerCase(ENGLISH);
+            assertUpdate("CREATE TABLE " + tableNameInSql + " (a bigint, b double, c varchar(50))");
+            assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
+            assertTableColumnNames(tableNameInSql, "a", "b", "c");
+
+            assertUpdate("DROP TABLE " + tableNameInSql);
+            assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
+        }
+    }
+
+    // TODO remove this test after https://github.com/trinodb/trino/issues/14517
+    @Test
+    public void testRenameColumnNameAdditionalTests()
+    {
+        for (String columnName : testTableNameTestData()) {
+            String nameInSql = "\"" + columnName.replace("\"", "\"\"") + "\"";
+            String tableName = "tcn_" + nameInSql.replaceAll("[^a-z0-9]", "") + randomNameSuffix();
+            // Use complex identifier to test a source column name when renaming columns
+            String sourceColumnName = "a;b$c";
+
+            assertUpdate("CREATE TABLE " + tableName + "(\"" + sourceColumnName + "\" varchar(50))");
+            assertTableColumnNames(tableName, sourceColumnName);
+
+            assertUpdate("ALTER TABLE " + tableName + " RENAME COLUMN \"" + sourceColumnName + "\" TO " + nameInSql);
+            assertTableColumnNames(tableName, columnName.toLowerCase(ENGLISH));
+
+            assertUpdate("DROP TABLE " + tableName);
+        }
+    }
+
+    // TODO move this test to BaseConnectorTest https://github.com/trinodb/trino/issues/14517
+    @Test
+    public void testRenameFromToTableWithSpecialCharacterName()
+    {
+        for (String tableName : testTableNameTestData()) {
+            String tableNameInSql = "\"" + tableName.replace("\"", "\"\"") + "\"";
+            String sourceTableName = "test_rename_source_" + randomNameSuffix();
+            assertUpdate("CREATE TABLE " + sourceTableName + " AS SELECT 123 x", 1);
+
+            assertUpdate("ALTER TABLE " + sourceTableName + " RENAME TO " + tableNameInSql);
+            assertQuery("SELECT x FROM " + tableNameInSql, "VALUES 123");
+            // test rename back is working properly
+            assertUpdate("ALTER TABLE " + tableNameInSql + " RENAME TO " + sourceTableName);
+            assertUpdate("DROP TABLE " + sourceTableName);
+        }
+    }
+
     private int getTableOperationsCount(String operation, String table)
             throws SQLException
     {
@@ -171,28 +247,49 @@ public class TestSqlServerConnectorTest
         }
     }
 
-    @DataProvider
-    public static Object[][] doubleTrueFalse()
+    private List<String> testTableNameTestData()
     {
-        return cartesianProduct(trueFalse(), trueFalse());
+        return ImmutableList.<String>builder()
+                .add("lowercase")
+                .add("UPPERCASE")
+                .add("MixedCase")
+                .add("an_underscore")
+                .add("a-hyphen-minus") // ASCII '-' is HYPHEN-MINUS in Unicode
+                .add("a space")
+                .add("atrailingspace ")
+                .add(" aleadingspace")
+                .add("a.dot")
+                .add("a,comma")
+                .add("a:colon")
+                .add("a;semicolon")
+                .add("an@at")
+                .add("a\"quote")
+                .add("an'apostrophe")
+                .add("a`backtick`")
+                .add("a/slash")
+                .add("a\\backslash")
+                .add("adigit0")
+                .add("0startwithdigit")
+                .add("[brackets]")
+                .add("brackets[]inside")
+                .add("open[bracket")
+                .add("close]bracket")
+                .build();
     }
 
-    @DataProvider
-    public static Object[][] tripleTrueFalse()
+    @Test
+    @Override
+    public void testSelectInformationSchemaTables()
     {
-        return cartesianProduct(trueFalse(), trueFalse(), trueFalse());
+        // Isolate this test to avoid problem described in https://github.com/trinodb/trino/issues/10846
+        executeExclusively(super::testSelectInformationSchemaTables);
     }
 
-    @DataProvider
-    public static Object[][] timestampTypes()
+    @Test
+    @Override
+    public void testSelectInformationSchemaColumns()
     {
-        // Timestamp with timezone is not supported by the SqlServer connector
-        return new Object[][] {
-                {"timestamp"},
-                {"timestamp(3)"},
-                {"timestamp(6)"},
-                {"timestamp(9)"},
-                {"timestamp(12)"}
-        };
+        // Isolate this test to avoid problem described in https://github.com/trinodb/trino/issues/10846
+        executeExclusively(super::testSelectInformationSchemaColumns);
     }
 }

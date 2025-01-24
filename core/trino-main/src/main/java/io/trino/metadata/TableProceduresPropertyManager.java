@@ -15,23 +15,22 @@ package io.trino.metadata;
 
 import com.google.common.collect.Maps;
 import io.trino.Session;
-import io.trino.connector.CatalogName;
 import io.trino.connector.CatalogServiceProvider;
 import io.trino.security.AccessControl;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.TableProcedureMetadata;
 import io.trino.spi.session.PropertyMetadata;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.Identifier;
 import io.trino.sql.tree.NodeRef;
 import io.trino.sql.tree.Parameter;
 import io.trino.sql.tree.Property;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Optional;
 
-import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.trino.metadata.PropertyUtil.evaluateProperties;
 import static io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT;
@@ -48,21 +47,20 @@ public class TableProceduresPropertyManager
     }
 
     public Map<String, Object> getProperties(
-            CatalogName catalog,
+            String catalogName,
+            CatalogHandle catalogHandle,
             String procedureName,
-            Map<String, Expression> sqlPropertyValues,
+            List<Property> properties,
             Session session,
             PlannerContext plannerContext,
             AccessControl accessControl,
             Map<NodeRef<Parameter>, Expression> parameters)
     {
-        TableProcedureMetadata tableProcedure = tableProceduresProvider.getService(catalog).getTableProcedure(procedureName);
+        TableProcedureMetadata tableProcedure = tableProceduresProvider.getService(catalogHandle).getTableProcedure(procedureName);
         Map<String, PropertyMetadata<?>> supportedProperties = Maps.uniqueIndex(tableProcedure.getProperties(), PropertyMetadata::getName);
 
         Map<String, Optional<Object>> propertyValues = evaluateProperties(
-                sqlPropertyValues.entrySet().stream()
-                        .map(entry -> new Property(new Identifier(entry.getKey()), entry.getValue()))
-                        .collect(toImmutableList()),
+                properties,
                 session,
                 plannerContext,
                 accessControl,
@@ -70,7 +68,8 @@ public class TableProceduresPropertyManager
                 true,
                 supportedProperties,
                 INVALID_PROCEDURE_ARGUMENT,
-                format("catalog '%s' table procedure '%s' property", catalog, procedureName));
+                format("catalog '%s' table procedure '%s' property", catalogName, procedureName));
+
         return propertyValues.entrySet().stream()
                 .filter(entry -> entry.getValue().isPresent())
                 .collect(toImmutableMap(Entry::getKey, entry -> entry.getValue().orElseThrow()));

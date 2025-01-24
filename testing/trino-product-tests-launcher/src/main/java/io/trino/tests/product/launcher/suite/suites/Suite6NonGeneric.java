@@ -16,19 +16,20 @@ package io.trino.tests.product.launcher.suite.suites;
 import com.google.common.collect.ImmutableList;
 import io.trino.tests.product.launcher.env.EnvironmentConfig;
 import io.trino.tests.product.launcher.env.EnvironmentDefaults;
-import io.trino.tests.product.launcher.env.environment.EnvMultinodeKafka;
-import io.trino.tests.product.launcher.env.environment.EnvMultinodeKafkaSaslPlaintext;
-import io.trino.tests.product.launcher.env.environment.EnvMultinodeKafkaSsl;
 import io.trino.tests.product.launcher.env.environment.EnvMultinodePhoenix5;
-import io.trino.tests.product.launcher.env.environment.EnvSinglenodeCassandra;
 import io.trino.tests.product.launcher.env.environment.EnvSinglenodeKerberosKmsHdfsImpersonation;
+import io.trino.tests.product.launcher.env.environment.EnvSinglenodeKerberosKmsHdfsImpersonationWithCredentialCache;
 import io.trino.tests.product.launcher.env.environment.EnvSinglenodeKerberosKmsHdfsNoImpersonation;
+import io.trino.tests.product.launcher.env.environment.EnvSinglenodeKerberosKmsHdfsNoImpersonationWithCredentialCache;
 import io.trino.tests.product.launcher.suite.Suite;
 import io.trino.tests.product.launcher.suite.SuiteTestRun;
 
 import java.util.List;
 
 import static com.google.common.base.Verify.verify;
+import static io.trino.tests.product.TestGroups.CONFIGURED_FEATURES;
+import static io.trino.tests.product.TestGroups.PHOENIX;
+import static io.trino.tests.product.TestGroups.STORAGE_FORMATS;
 import static io.trino.tests.product.launcher.suite.SuiteTestRun.testOnEnvironment;
 
 public class Suite6NonGeneric
@@ -41,25 +42,19 @@ public class Suite6NonGeneric
 
         return ImmutableList.of(
                 testOnEnvironment(EnvSinglenodeKerberosKmsHdfsNoImpersonation.class)
-                        .withGroups("configured_features", "storage_formats")
+                        .withGroups(CONFIGURED_FEATURES, STORAGE_FORMATS)
+                        .build(),
+                testOnEnvironment(EnvSinglenodeKerberosKmsHdfsNoImpersonationWithCredentialCache.class)
+                        .withGroups(CONFIGURED_FEATURES, STORAGE_FORMATS)
                         .build(),
                 testOnEnvironment(EnvSinglenodeKerberosKmsHdfsImpersonation.class)
-                        .withGroups("configured_features", "storage_formats")
+                        .withGroups(CONFIGURED_FEATURES, STORAGE_FORMATS)
                         .build(),
-                testOnEnvironment(EnvSinglenodeCassandra.class)
-                        .withGroups("configured_features", "cassandra")
-                        .build(),
-                testOnEnvironment(EnvMultinodeKafka.class)
-                        .withGroups("configured_features", "kafka")
-                        .build(),
-                testOnEnvironment(EnvMultinodeKafkaSsl.class)
-                        .withGroups("configured_features", "kafka")
-                        .build(),
-                testOnEnvironment(EnvMultinodeKafkaSaslPlaintext.class)
-                        .withGroups("configured_features", "kafka")
+                testOnEnvironment(EnvSinglenodeKerberosKmsHdfsImpersonationWithCredentialCache.class)
+                        .withGroups(CONFIGURED_FEATURES, STORAGE_FORMATS)
                         .build(),
                 testOnEnvironment(EnvMultinodePhoenix5.class)
-                        .withGroups("configured_features", "phoenix")
+                        .withGroups(CONFIGURED_FEATURES, PHOENIX)
                         .build());
     }
 }

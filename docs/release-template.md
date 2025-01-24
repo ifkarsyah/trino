@@ -1,4 +1,4 @@
-# Release xyz (dd MMM 2022)
+# Release xyz (dd MMM 2024)
 
 ## General
 
@@ -14,10 +14,6 @@
 
 ## CLI
 
-## Accumulo connector
-
-## Atop connector
-
 ## BigQuery connector
 
 ## Blackhole connector
@@ -32,11 +28,19 @@
 
 ## Elasticsearch connector
 
+## Exasol connector
+
+## Faker connector
+
 ## Google Sheets connector
 
 ## Hive connector
 
+## Hudi connector
+
 ## Iceberg connector
+
+## Ignite connector
 
 ## JMX connector
 
@@ -46,8 +50,6 @@
 
 ## Kudu connector
 
-## Local file connector
-
 ## MariaDB connector
 
 ## Memory connector
@@ -55,6 +57,8 @@
 ## MongoDB connector
 
 ## MySQL connector
+
+## OpenSearch connector
 
 ## Oracle connector
 
@@ -66,16 +70,20 @@
 
 ## Prometheus connector
 
-## Raptor connector
-
 ## Redis connector
 
 ## Redshift connector
 
-## SingleStore (MemSQL) connector
+## SingleStore connector
+
+## Snowflake connector
 
 ## SQL Server connector
 
 ## TPC-H connector
+
+## TPC-DS connector
+
+## Vertica connector
 
 ## SPI

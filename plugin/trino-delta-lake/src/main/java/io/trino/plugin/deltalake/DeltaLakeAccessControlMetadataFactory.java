@@ -13,7 +13,7 @@
  */
 package io.trino.plugin.deltalake;
 
-import io.trino.plugin.hive.metastore.HiveMetastore;
+import io.trino.metastore.HiveMetastore;
 import io.trino.plugin.hive.security.AccessControlMetadata;
 
 public interface DeltaLakeAccessControlMetadataFactory
@@ -25,6 +25,7 @@ public interface DeltaLakeAccessControlMetadataFactory
             return true;
         }
     };
+    DeltaLakeAccessControlMetadataFactory DEFAULT = metastore -> new AccessControlMetadata() {};
 
     AccessControlMetadata create(HiveMetastore metastore);
 }

@@ -14,7 +14,7 @@
 package io.trino.connector.system;
 
 import com.google.common.collect.ImmutableList;
-import io.trino.connector.CatalogName;
+import com.google.inject.Inject;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.connector.ConnectorSession;
@@ -32,8 +32,6 @@ import io.trino.spi.type.VarcharType;
 import io.trino.transaction.TransactionInfo;
 import io.trino.transaction.TransactionManager;
 import org.joda.time.DateTime;
-
-import javax.inject.Inject;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -97,22 +95,22 @@ public class TransactionsSystemTable
                     info.isAutoCommitContext(),
                     toTimestampWithTimeZoneMillis(info.getCreateTime()),
                     (long) info.getIdleTime().getValue(TimeUnit.SECONDS),
-                    info.getWrittenConnectorId().map(CatalogName::getCatalogName).orElse(null),
+                    info.getWrittenCatalogName().orElse(null),
                     createStringsBlock(info.getCatalogNames()));
         }
         return table.build().cursor();
     }
 
-    private static Block createStringsBlock(List<CatalogName> values)
+    private static Block createStringsBlock(List<String> values)
     {
         VarcharType varchar = createUnboundedVarcharType();
         BlockBuilder builder = varchar.createBlockBuilder(null, values.size());
-        for (CatalogName value : values) {
+        for (String value : values) {
             if (value == null) {
                 builder.appendNull();
             }
             else {
-                varchar.writeString(builder, value.getCatalogName());
+                varchar.writeString(builder, value);
             }
         }
         return builder.build();

@@ -23,6 +23,8 @@ import java.util.List;
 
 import static io.trino.plugin.kudu.KuduClientSession.DEFAULT_SCHEMA;
 import static io.trino.spi.StandardErrorCode.GENERIC_USER_ERROR;
+import static io.trino.spi.StandardErrorCode.SCHEMA_ALREADY_EXISTS;
+import static java.lang.String.format;
 
 public class NoSchemaEmulation
         implements SchemaEmulation
@@ -31,22 +33,18 @@ public class NoSchemaEmulation
     public void createSchema(KuduClientWrapper client, String schemaName)
     {
         if (DEFAULT_SCHEMA.equals(schemaName)) {
-            throw new SchemaAlreadyExistsException(schemaName);
+            throw new TrinoException(SCHEMA_ALREADY_EXISTS, format("Schema already exists: '%s'", schemaName));
         }
-        else {
-            throw new TrinoException(GENERIC_USER_ERROR, "Creating schema in Kudu connector not allowed if schema emulation is disabled.");
-        }
+        throw new TrinoException(GENERIC_USER_ERROR, "Creating schema in Kudu connector not allowed if schema emulation is disabled.");
     }
 
     @Override
-    public void dropSchema(KuduClientWrapper client, String schemaName)
+    public void dropSchema(KuduClientWrapper client, String schemaName, boolean cascade)
     {
         if (DEFAULT_SCHEMA.equals(schemaName)) {
             throw new TrinoException(GENERIC_USER_ERROR, "Deleting default schema not allowed.");
         }
-        else {
-            throw new SchemaNotFoundException(schemaName);
-        }
+        throw new SchemaNotFoundException(schemaName);
     }
 
     @Override
@@ -67,9 +65,7 @@ public class NoSchemaEmulation
         if (DEFAULT_SCHEMA.equals(schemaTableName.getSchemaName())) {
             return schemaTableName.getTableName();
         }
-        else {
-            throw new SchemaNotFoundException(schemaTableName.getSchemaName());
-        }
+        throw new SchemaNotFoundException(schemaTableName.getSchemaName());
     }
 
     @Override

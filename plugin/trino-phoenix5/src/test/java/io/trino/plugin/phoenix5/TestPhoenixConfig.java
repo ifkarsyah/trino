@@ -13,8 +13,10 @@
  */
 package io.trino.plugin.phoenix5;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import org.testng.annotations.Test;
+import io.airlift.units.Duration;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -24,6 +26,7 @@ import java.util.Map;
 import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
 import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
 import static io.airlift.configuration.testing.ConfigAssertions.recordDefaults;
+import static java.util.concurrent.TimeUnit.HOURS;
 
 public class TestPhoenixConfig
 {
@@ -32,8 +35,10 @@ public class TestPhoenixConfig
     {
         assertRecordedDefaults(recordDefaults(PhoenixConfig.class)
                 .setConnectionUrl(null)
-                .setResourceConfigFiles("")
-                .setMaxScansPerSplit(20));
+                .setResourceConfigFiles(ImmutableList.of())
+                .setMaxScansPerSplit(20)
+                .setReuseConnection(true)
+                .setServerScanPageTimeout(null));
     }
 
     @Test
@@ -46,12 +51,16 @@ public class TestPhoenixConfig
                 .put("phoenix.connection-url", "jdbc:phoenix:localhost:2181:/hbase")
                 .put("phoenix.config.resources", configFile.toString())
                 .put("phoenix.max-scans-per-split", "1")
+                .put("query.reuse-connection", "false")
+                .put("phoenix.server-scan-page-timeout", "11h")
                 .buildOrThrow();
 
         PhoenixConfig expected = new PhoenixConfig()
                 .setConnectionUrl("jdbc:phoenix:localhost:2181:/hbase")
-                .setResourceConfigFiles(configFile.toString())
-                .setMaxScansPerSplit(1);
+                .setResourceConfigFiles(ImmutableList.of(configFile.toString()))
+                .setMaxScansPerSplit(1)
+                .setServerScanPageTimeout(new Duration(11, HOURS))
+                .setReuseConnection(false);
 
         assertFullMapping(properties, expected);
     }

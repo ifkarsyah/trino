@@ -14,7 +14,7 @@
 package io.trino.plugin.deltalake.metastore.glue;
 
 import com.google.common.collect.ImmutableMap;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
@@ -34,9 +34,7 @@ public class TestDeltaLakeGlueMetastoreConfig
     @Test
     public void testExplicitPropertyMappings()
     {
-        Map<String, String> properties = ImmutableMap.<String, String>builder()
-                .put("delta.hide-non-delta-lake-tables", "true")
-                .buildOrThrow();
+        Map<String, String> properties = ImmutableMap.of("delta.hide-non-delta-lake-tables", "true");
 
         DeltaLakeGlueMetastoreConfig expected = new DeltaLakeGlueMetastoreConfig()
                 .setHideNonDeltaLakeTables(true);
