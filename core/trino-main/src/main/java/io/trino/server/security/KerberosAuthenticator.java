@@ -13,9 +13,12 @@
  */
 package io.trino.server.security;
 
+import com.google.inject.Inject;
 import com.sun.security.auth.module.Krb5LoginModule;
 import io.airlift.log.Logger;
 import io.trino.spi.security.Identity;
+import jakarta.annotation.PreDestroy;
+import jakarta.ws.rs.container.ContainerRequestContext;
 import org.ietf.jgss.GSSContext;
 import org.ietf.jgss.GSSCredential;
 import org.ietf.jgss.GSSException;
@@ -23,20 +26,16 @@ import org.ietf.jgss.GSSManager;
 import org.ietf.jgss.GSSName;
 import org.ietf.jgss.Oid;
 
-import javax.annotation.PreDestroy;
-import javax.inject.Inject;
 import javax.security.auth.Subject;
 import javax.security.auth.kerberos.KerberosPrincipal;
 import javax.security.auth.login.AppConfigurationEntry;
 import javax.security.auth.login.Configuration;
 import javax.security.auth.login.LoginContext;
 import javax.security.auth.login.LoginException;
-import javax.ws.rs.container.ContainerRequestContext;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.security.Principal;
-import java.security.PrivilegedAction;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Locale;
@@ -46,7 +45,6 @@ import java.util.Optional;
 import static com.google.common.net.HttpHeaders.AUTHORIZATION;
 import static io.trino.plugin.base.util.SystemProperties.setJavaSecurityKrb5Conf;
 import static io.trino.server.security.UserMapping.createUserMapping;
-import static java.util.Objects.requireNonNull;
 import static javax.security.auth.login.AppConfigurationEntry.LoginModuleControlFlag.REQUIRED;
 import static org.ietf.jgss.GSSCredential.ACCEPT_ONLY;
 import static org.ietf.jgss.GSSCredential.INDEFINITE_LIFETIME;
@@ -66,7 +64,6 @@ public class KerberosAuthenticator
     @Inject
     public KerberosAuthenticator(KerberosConfig config)
     {
-        requireNonNull(config, "config is null");
         this.userMapping = createUserMapping(config.getUserMappingPattern(), config.getUserMappingFile());
 
         setJavaSecurityKrb5Conf(config.getKerberosConfig().getAbsolutePath());
@@ -102,7 +99,7 @@ public class KerberosAuthenticator
             loginContext.login();
 
             GSSName gssName = config.getNameType().getGSSName(gssManager, config.getServiceName(), hostname);
-            serverCredential = doAs(loginContext.getSubject(), () -> gssManager.createCredential(
+            serverCredential = callAs(loginContext.getSubject(), () -> gssManager.createCredential(
                     gssName,
                     INDEFINITE_LIFETIME,
                     new Oid[] {
@@ -169,7 +166,7 @@ public class KerberosAuthenticator
 
     private Optional<Principal> authenticate(String token)
     {
-        GSSContext context = doAs(loginContext.getSubject(), () -> gssManager.createContext(serverCredential));
+        GSSContext context = callAs(loginContext.getSubject(), () -> gssManager.createContext(serverCredential));
 
         try {
             byte[] inputToken = Base64.getDecoder().decode(token);
@@ -204,9 +201,9 @@ public class KerberosAuthenticator
                 throws GSSException;
     }
 
-    private static <T> T doAs(Subject subject, GssSupplier<T> action)
+    private static <T> T callAs(Subject subject, GssSupplier<T> action)
     {
-        return Subject.doAs(subject, (PrivilegedAction<T>) () -> {
+        return Subject.callAs(subject, () -> {
             try {
                 return action.get();
             }

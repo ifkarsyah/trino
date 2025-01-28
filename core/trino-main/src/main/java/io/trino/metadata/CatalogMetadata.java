@@ -16,13 +16,17 @@ package io.trino.metadata;
 import com.google.common.collect.ImmutableList;
 import io.airlift.log.Logger;
 import io.trino.Session;
-import io.trino.connector.CatalogName;
+import io.trino.spi.catalog.CatalogName;
+import io.trino.spi.connector.CatalogHandle;
+import io.trino.spi.connector.CatalogHandle.CatalogHandleType;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.ConnectorCapabilities;
 import io.trino.spi.connector.ConnectorMetadata;
+import io.trino.spi.connector.ConnectorTableVersion;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
@@ -30,6 +34,8 @@ import static java.util.Objects.requireNonNull;
 
 public class CatalogMetadata
 {
+    private final CatalogName catalogName;
+
     public enum SecurityManagement
     {
         SYSTEM, CONNECTOR
@@ -46,12 +52,14 @@ public class CatalogMetadata
     private final Set<ConnectorCapabilities> connectorCapabilities;
 
     public CatalogMetadata(
+            CatalogName catalogName,
             CatalogTransaction catalogTransaction,
             CatalogTransaction informationSchemaTransaction,
             CatalogTransaction systemTransaction,
             SecurityManagement securityManagement,
             Set<ConnectorCapabilities> connectorCapabilities)
     {
+        this.catalogName = requireNonNull(catalogName, "catalogName is null");
         this.catalogTransaction = requireNonNull(catalogTransaction, "catalogTransaction is null");
         this.informationSchemaTransaction = requireNonNull(informationSchemaTransaction, "informationSchemaTransaction is null");
         this.systemTransaction = requireNonNull(systemTransaction, "systemTransaction is null");
@@ -61,7 +69,12 @@ public class CatalogMetadata
 
     public CatalogName getCatalogName()
     {
-        return catalogTransaction.getCatalogName();
+        return catalogName;
+    }
+
+    public CatalogHandle getCatalogHandle()
+    {
+        return catalogTransaction.getCatalogHandle();
     }
 
     public boolean isSingleStatementWritesOnly()
@@ -74,53 +87,63 @@ public class CatalogMetadata
         return catalogTransaction.getConnectorMetadata(session);
     }
 
-    public ConnectorMetadata getMetadataFor(Session session, CatalogName catalogName)
+    public ConnectorMetadata getMetadataFor(Session session, CatalogHandle catalogHandle)
     {
-        if (catalogName.equals(catalogTransaction.getCatalogName())) {
+        if (catalogHandle.equals(catalogTransaction.getCatalogHandle())) {
             return catalogTransaction.getConnectorMetadata(session);
         }
-        if (catalogName.equals(informationSchemaTransaction.getCatalogName())) {
+        if (catalogHandle.equals(informationSchemaTransaction.getCatalogHandle())) {
             return informationSchemaTransaction.getConnectorMetadata(session);
         }
-        if (catalogName.equals(systemTransaction.getCatalogName())) {
+        if (catalogHandle.equals(systemTransaction.getCatalogHandle())) {
             return systemTransaction.getConnectorMetadata(session);
         }
-        throw new IllegalArgumentException("Unknown connector id: " + catalogName);
+        throw new IllegalArgumentException("Unknown catalog handle: " + catalogHandle);
     }
 
-    public ConnectorTransactionHandle getTransactionHandleFor(CatalogName catalogName)
+    public ConnectorTransactionHandle getTransactionHandleFor(CatalogHandleType catalogHandleType)
     {
-        if (catalogName.equals(catalogTransaction.getCatalogName())) {
+        return switch (catalogHandleType) {
+            case NORMAL -> catalogTransaction.getTransactionHandle();
+            case INFORMATION_SCHEMA -> informationSchemaTransaction.getTransactionHandle();
+            case SYSTEM -> systemTransaction.getTransactionHandle();
+        };
+    }
+
+    public ConnectorTransactionHandle getTransactionHandleFor(CatalogHandle catalogHandle)
+    {
+        if (catalogHandle.equals(catalogTransaction.getCatalogHandle())) {
             return catalogTransaction.getTransactionHandle();
         }
-        if (catalogName.equals(informationSchemaTransaction.getCatalogName())) {
+        if (catalogHandle.equals(informationSchemaTransaction.getCatalogHandle())) {
             return informationSchemaTransaction.getTransactionHandle();
         }
-        if (catalogName.equals(systemTransaction.getCatalogName())) {
+        if (catalogHandle.equals(systemTransaction.getCatalogHandle())) {
             return systemTransaction.getTransactionHandle();
         }
-        throw new IllegalArgumentException("Unknown connector id: " + catalogName);
+        throw new IllegalArgumentException("Unknown catalog handle: " + catalogHandle);
     }
 
-    public CatalogName getConnectorIdForSchema(CatalogSchemaName schema)
+    public CatalogHandle getConnectorHandleForSchema(CatalogSchemaName schema)
     {
         if (schema.getSchemaName().equals(INFORMATION_SCHEMA_NAME)) {
-            return informationSchemaTransaction.getCatalogName();
+            return informationSchemaTransaction.getCatalogHandle();
         }
-        return catalogTransaction.getCatalogName();
+        return catalogTransaction.getCatalogHandle();
     }
 
-    public CatalogName getConnectorId(Session session, QualifiedObjectName table)
+    public CatalogHandle getCatalogHandle(Session session, QualifiedObjectName table, Optional<ConnectorTableVersion> startVersion, Optional<ConnectorTableVersion> endVersion)
     {
-        if (table.getSchemaName().equals(INFORMATION_SCHEMA_NAME)) {
-            return informationSchemaTransaction.getCatalogName();
+        if (table.schemaName().equals(INFORMATION_SCHEMA_NAME)) {
+            return informationSchemaTransaction.getCatalogHandle();
         }
 
-        if (systemTransaction.getConnectorMetadata(session).getTableHandle(session.toConnectorSession(systemTransaction.getCatalogName()), table.asSchemaTableName()) != null) {
-            return systemTransaction.getCatalogName();
+        if (systemTransaction.getConnectorMetadata(session)
+                .getTableHandle(session.toConnectorSession(systemTransaction.getCatalogHandle()), table.asSchemaTableName(), startVersion, endVersion) != null) {
+            return systemTransaction.getCatalogHandle();
         }
 
-        return catalogTransaction.getCatalogName();
+        return catalogTransaction.getCatalogHandle();
     }
 
     public void commit()
@@ -147,9 +170,9 @@ public class CatalogMetadata
         }
     }
 
-    public List<CatalogName> listConnectorIds()
+    public List<CatalogHandle> listCatalogHandles()
     {
-        return ImmutableList.of(informationSchemaTransaction.getCatalogName(), systemTransaction.getCatalogName(), catalogTransaction.getCatalogName());
+        return ImmutableList.of(informationSchemaTransaction.getCatalogHandle(), systemTransaction.getCatalogHandle(), catalogTransaction.getCatalogHandle());
     }
 
     public SecurityManagement getSecurityManagement()
@@ -166,7 +189,8 @@ public class CatalogMetadata
     public String toString()
     {
         return toStringHelper(this)
-                .add("catalogName", catalogTransaction.getCatalogName())
+                .add("catalogName", catalogName)
+                .add("catalogHandle", getCatalogHandle())
                 .toString();
     }
 }

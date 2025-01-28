@@ -15,27 +15,38 @@ package io.trino.plugin.exchange.filesystem;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Multimap;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.airlift.units.DataSize;
+import io.opentelemetry.api.trace.Span;
 import io.trino.spi.QueryId;
 import io.trino.spi.exchange.Exchange;
 import io.trino.spi.exchange.ExchangeContext;
+import io.trino.spi.exchange.ExchangeId;
 import io.trino.spi.exchange.ExchangeManager;
 import io.trino.spi.exchange.ExchangeSink;
 import io.trino.spi.exchange.ExchangeSinkHandle;
 import io.trino.spi.exchange.ExchangeSinkInstanceHandle;
 import io.trino.spi.exchange.ExchangeSource;
 import io.trino.spi.exchange.ExchangeSourceHandle;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import io.trino.spi.exchange.ExchangeSourceHandleSource.ExchangeSourceHandleBatch;
+import io.trino.spi.exchange.ExchangeSourceOutputSelector;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
+import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.function.Function;
 
+import static com.google.common.collect.ImmutableListMultimap.toImmutableListMultimap;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.airlift.concurrent.MoreFutures.getFutureValue;
 import static io.airlift.units.DataSize.Unit.BYTE;
@@ -44,21 +55,26 @@ import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.trino.plugin.exchange.filesystem.FileSystemExchangeErrorCode.MAX_OUTPUT_PARTITION_COUNT_EXCEEDED;
 import static io.trino.spi.exchange.ExchangeId.createRandomExchangeId;
 import static java.lang.Math.toIntExact;
+import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public abstract class AbstractTestExchangeManager
 {
     private ExchangeManager exchangeManager;
 
-    @BeforeClass
+    @BeforeAll
     public void init()
             throws Exception
     {
         exchangeManager = createExchangeManager();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void destroy()
             throws Exception
     {
@@ -69,17 +85,45 @@ public abstract class AbstractTestExchangeManager
 
     protected abstract ExchangeManager createExchangeManager();
 
+    private record TestExchangeContext(ExchangeId exchangeId)
+            implements ExchangeContext
+    {
+        private TestExchangeContext(ExchangeId exchangeId)
+        {
+            this.exchangeId = requireNonNull(exchangeId, "exchangeId is null");
+        }
+
+        @Override
+        public QueryId getQueryId()
+        {
+            return new QueryId("query");
+        }
+
+        @Override
+        public ExchangeId getExchangeId()
+        {
+            return exchangeId;
+        }
+
+        @Override
+        public Span getParentSpan()
+        {
+            return Span.getInvalid();
+        }
+    }
+
     @Test
     public void testHappyPath()
             throws Exception
     {
-        Exchange exchange = exchangeManager.createExchange(new ExchangeContext(new QueryId("query"), createRandomExchangeId()), 2);
+        ExchangeId exchangeId = createRandomExchangeId();
+        Exchange exchange = exchangeManager.createExchange(new TestExchangeContext(exchangeId), 2, false);
         ExchangeSinkHandle sinkHandle0 = exchange.addSink(0);
         ExchangeSinkHandle sinkHandle1 = exchange.addSink(1);
         ExchangeSinkHandle sinkHandle2 = exchange.addSink(2);
         exchange.noMoreSinks();
 
-        ExchangeSinkInstanceHandle sinkInstanceHandle = exchange.instantiateSink(sinkHandle0, 0);
+        ExchangeSinkInstanceHandle sinkInstanceHandle = exchange.instantiateSink(sinkHandle0, 0).get();
         writeData(
                 sinkInstanceHandle,
                 ImmutableListMultimap.of(
@@ -88,8 +132,8 @@ public abstract class AbstractTestExchangeManager
                         0, "0-0-1",
                         1, "0-1-1"),
                 true);
-        exchange.sinkFinished(sinkInstanceHandle);
-        sinkInstanceHandle = exchange.instantiateSink(sinkHandle0, 1);
+        exchange.sinkFinished(sinkHandle0, 0);
+        sinkInstanceHandle = exchange.instantiateSink(sinkHandle0, 1).get();
         writeData(
                 sinkInstanceHandle,
                 ImmutableListMultimap.of(
@@ -98,17 +142,17 @@ public abstract class AbstractTestExchangeManager
                         0, "0-0-1",
                         1, "0-1-1"),
                 true);
-        exchange.sinkFinished(sinkInstanceHandle);
-        sinkInstanceHandle = exchange.instantiateSink(sinkHandle0, 2);
+        exchange.sinkFinished(sinkHandle0, 1);
+        sinkInstanceHandle = exchange.instantiateSink(sinkHandle0, 2).get();
         writeData(
                 sinkInstanceHandle,
                 ImmutableListMultimap.of(
                         0, "failed",
                         1, "another failed"),
                 false);
-        exchange.sinkFinished(sinkInstanceHandle);
+        exchange.sinkFinished(sinkHandle0, 2);
 
-        sinkInstanceHandle = exchange.instantiateSink(sinkHandle1, 0);
+        sinkInstanceHandle = exchange.instantiateSink(sinkHandle1, 0).get();
         writeData(
                 sinkInstanceHandle,
                 ImmutableListMultimap.of(
@@ -117,8 +161,8 @@ public abstract class AbstractTestExchangeManager
                         0, "1-0-1",
                         1, "1-1-1"),
                 true);
-        exchange.sinkFinished(sinkInstanceHandle);
-        sinkInstanceHandle = exchange.instantiateSink(sinkHandle1, 1);
+        exchange.sinkFinished(sinkHandle1, 0);
+        sinkInstanceHandle = exchange.instantiateSink(sinkHandle1, 1).get();
         writeData(
                 sinkInstanceHandle,
                 ImmutableListMultimap.of(
@@ -127,35 +171,45 @@ public abstract class AbstractTestExchangeManager
                         0, "1-0-1",
                         1, "1-1-1"),
                 true);
-        exchange.sinkFinished(sinkInstanceHandle);
-        sinkInstanceHandle = exchange.instantiateSink(sinkHandle1, 2);
+        exchange.sinkFinished(sinkHandle1, 1);
+        sinkInstanceHandle = exchange.instantiateSink(sinkHandle1, 2).get();
         writeData(
                 sinkInstanceHandle,
                 ImmutableListMultimap.of(
                         0, "more failed",
                         1, "another failed"),
                 false);
-        exchange.sinkFinished(sinkInstanceHandle);
+        exchange.sinkFinished(sinkHandle1, 2);
 
-        sinkInstanceHandle = exchange.instantiateSink(sinkHandle2, 2);
+        sinkInstanceHandle = exchange.instantiateSink(sinkHandle2, 2).get();
         writeData(
                 sinkInstanceHandle,
                 ImmutableListMultimap.of(
                         0, "2-0-0",
                         1, "2-1-0"),
                 true);
-        exchange.sinkFinished(sinkInstanceHandle);
+        exchange.sinkFinished(sinkHandle2, 2);
+        exchange.allRequiredSinksFinished();
 
-        List<ExchangeSourceHandle> partitionHandles = exchange.getSourceHandles().get();
+        ExchangeSourceHandleBatch sourceHandleBatch = exchange.getSourceHandles().getNextBatch().get();
+        assertThat(sourceHandleBatch.lastBatch()).isTrue();
+        List<ExchangeSourceHandle> partitionHandles = sourceHandleBatch.handles();
         assertThat(partitionHandles).hasSize(2);
 
         Map<Integer, ExchangeSourceHandle> partitions = partitionHandles.stream()
                 .collect(toImmutableMap(ExchangeSourceHandle::getPartitionId, Function.identity()));
 
-        assertThat(readData(partitions.get(0)))
+        ExchangeSourceOutputSelector outputSelector = ExchangeSourceOutputSelector.builder(ImmutableSet.of(exchangeId))
+                .include(exchangeId, 0, 0)
+                .include(exchangeId, 1, 0)
+                .include(exchangeId, 2, 2)
+                .setPartitionCount(exchangeId, 3)
+                .setFinal()
+                .build();
+        assertThat(readData(partitions.get(0), outputSelector))
                 .containsExactlyInAnyOrder("0-0-0", "0-0-1", "1-0-0", "1-0-1", "2-0-0");
 
-        assertThat(readData(partitions.get(1)))
+        assertThat(readData(partitions.get(1), outputSelector))
                 .containsExactlyInAnyOrder("0-1-0", "0-1-1", "1-1-0", "1-1-1", "2-1-0");
 
         exchange.close();
@@ -170,13 +224,14 @@ public abstract class AbstractTestExchangeManager
         String largePage = "c".repeat(toIntExact(DataSize.of(5, MEGABYTE).toBytes()) - Integer.BYTES);
         String maxPage = "d".repeat(toIntExact(DataSize.of(16, MEGABYTE).toBytes()) - Integer.BYTES);
 
-        Exchange exchange = exchangeManager.createExchange(new ExchangeContext(new QueryId("query"), createRandomExchangeId()), 3);
+        ExchangeId exchangeId = createRandomExchangeId();
+        Exchange exchange = exchangeManager.createExchange(new TestExchangeContext(exchangeId), 3, false);
         ExchangeSinkHandle sinkHandle0 = exchange.addSink(0);
         ExchangeSinkHandle sinkHandle1 = exchange.addSink(1);
         ExchangeSinkHandle sinkHandle2 = exchange.addSink(2);
         exchange.noMoreSinks();
 
-        ExchangeSinkInstanceHandle sinkInstanceHandle = exchange.instantiateSink(sinkHandle0, 0);
+        ExchangeSinkInstanceHandle sinkInstanceHandle = exchange.instantiateSink(sinkHandle0, 0).get();
         writeData(
                 sinkInstanceHandle,
                 new ImmutableListMultimap.Builder<Integer, String>()
@@ -185,9 +240,9 @@ public abstract class AbstractTestExchangeManager
                         .putAll(2, ImmutableList.of())
                         .build(),
                 true);
-        exchange.sinkFinished(sinkInstanceHandle);
+        exchange.sinkFinished(sinkHandle0, 0);
 
-        sinkInstanceHandle = exchange.instantiateSink(sinkHandle1, 0);
+        sinkInstanceHandle = exchange.instantiateSink(sinkHandle1, 0).get();
         writeData(
                 sinkInstanceHandle,
                 new ImmutableListMultimap.Builder<Integer, String>()
@@ -196,9 +251,9 @@ public abstract class AbstractTestExchangeManager
                         .putAll(2, ImmutableList.of(smallPage))
                         .build(),
                 true);
-        exchange.sinkFinished(sinkInstanceHandle);
+        exchange.sinkFinished(sinkHandle1, 0);
 
-        sinkInstanceHandle = exchange.instantiateSink(sinkHandle2, 0);
+        sinkInstanceHandle = exchange.instantiateSink(sinkHandle2, 0).get();
         writeData(
                 sinkInstanceHandle,
                 new ImmutableListMultimap.Builder<Integer, String>()
@@ -207,21 +262,32 @@ public abstract class AbstractTestExchangeManager
                         .putAll(2, ImmutableList.of(maxPage, largePage, mediumPage))
                         .build(),
                 true);
-        exchange.sinkFinished(sinkInstanceHandle);
+        exchange.sinkFinished(sinkHandle2, 0);
+        exchange.allRequiredSinksFinished();
 
-        List<ExchangeSourceHandle> partitionHandles = exchange.getSourceHandles().get();
-        assertThat(partitionHandles).hasSize(3);
+        ExchangeSourceHandleBatch sourceHandleBatch = exchange.getSourceHandles().getNextBatch().get();
+        assertThat(sourceHandleBatch.lastBatch()).isTrue();
+        List<ExchangeSourceHandle> partitionHandles = sourceHandleBatch.handles();
+        assertThat(partitionHandles).hasSize(10);
 
-        Map<Integer, ExchangeSourceHandle> partitions = partitionHandles.stream()
-                .collect(toImmutableMap(ExchangeSourceHandle::getPartitionId, Function.identity()));
+        ListMultimap<Integer, ExchangeSourceHandle> partitions = partitionHandles.stream()
+                .collect(toImmutableListMultimap(ExchangeSourceHandle::getPartitionId, Function.identity()));
 
-        assertThat(readData(partitions.get(0)))
+        ExchangeSourceOutputSelector outputSelector = ExchangeSourceOutputSelector.builder(ImmutableSet.of(exchangeId))
+                .include(exchangeId, 0, 0)
+                .include(exchangeId, 1, 0)
+                .include(exchangeId, 2, 0)
+                .setPartitionCount(exchangeId, 3)
+                .setFinal()
+                .build();
+
+        assertThat(readData(partitions.get(0), outputSelector))
                 .containsExactlyInAnyOrder(smallPage, mediumPage, largePage, maxPage);
 
-        assertThat(readData(partitions.get(1)))
+        assertThat(readData(partitions.get(1), outputSelector))
                 .containsExactlyInAnyOrder(smallPage, mediumPage, largePage, maxPage);
 
-        assertThat(readData(partitions.get(2)))
+        assertThat(readData(partitions.get(2), outputSelector))
                 .containsExactlyInAnyOrder(smallPage, mediumPage, largePage, maxPage);
 
         exchange.close();
@@ -230,14 +296,14 @@ public abstract class AbstractTestExchangeManager
     @Test
     public void testMaxOutputPartitionCountCheck()
     {
-        assertThatThrownBy(() -> exchangeManager.createExchange(new ExchangeContext(new QueryId("query"), createRandomExchangeId()), 51))
+        assertThatThrownBy(() -> exchangeManager.createExchange(new TestExchangeContext(createRandomExchangeId()), 51, false))
                 .hasMessageContaining("Max number of output partitions exceeded for exchange")
                 .hasFieldOrPropertyWithValue("errorCode", MAX_OUTPUT_PARTITION_COUNT_EXCEEDED.toErrorCode());
     }
 
     private void writeData(ExchangeSinkInstanceHandle handle, Multimap<Integer, String> data, boolean finish)
     {
-        ExchangeSink sink = exchangeManager.createSink(handle, false);
+        ExchangeSink sink = exchangeManager.createSink(handle);
         data.forEach((key, value) -> {
             sink.add(key, Slices.utf8Slice(value));
         });
@@ -249,19 +315,28 @@ public abstract class AbstractTestExchangeManager
         }
     }
 
-    private List<String> readData(ExchangeSourceHandle handle)
+    private List<String> readData(ExchangeSourceHandle handle, ExchangeSourceOutputSelector outputSelector)
     {
-        return readData(ImmutableList.of(handle));
+        return readData(ImmutableList.of(handle), outputSelector);
     }
 
-    private List<String> readData(List<ExchangeSourceHandle> handles)
+    private List<String> readData(List<ExchangeSourceHandle> handles, ExchangeSourceOutputSelector outputSelector)
     {
         ImmutableList.Builder<String> result = ImmutableList.builder();
-        try (ExchangeSource source = exchangeManager.createSource(handles)) {
+        try (ExchangeSource source = exchangeManager.createSource()) {
+            source.setOutputSelector(outputSelector);
+            Queue<ExchangeSourceHandle> remainingHandles = new ArrayDeque<>(handles);
             while (!source.isFinished()) {
                 Slice data = source.read();
                 if (data != null) {
                     result.add(data.toStringUtf8());
+                }
+                ExchangeSourceHandle handle = remainingHandles.poll();
+                if (handle != null) {
+                    source.addSourceHandles(ImmutableList.of(handle));
+                }
+                else {
+                    source.noMoreSourceHandles();
                 }
             }
         }

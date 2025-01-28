@@ -15,7 +15,7 @@ package io.trino.plugin.exchange.filesystem.azure;
 
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.DataSize;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
@@ -30,8 +30,10 @@ public class TestExchangeAzureConfig
     public void testDefaults()
     {
         assertRecordedDefaults(recordDefaults(ExchangeAzureConfig.class)
+                .setAzureStorageEndpoint(null)
                 .setAzureStorageConnectionString(null)
-                .setAzureStorageBlockSize(DataSize.of(4, MEGABYTE)));
+                .setAzureStorageBlockSize(DataSize.of(4, MEGABYTE))
+                .setMaxErrorRetries(10));
     }
 
     @Test
@@ -39,12 +41,16 @@ public class TestExchangeAzureConfig
     {
         Map<String, String> properties = ImmutableMap.<String, String>builder()
                 .put("exchange.azure.connection-string", "connection")
+                .put("exchange.azure.endpoint", "endpoint")
                 .put("exchange.azure.block-size", "8MB")
+                .put("exchange.azure.max-error-retries", "8")
                 .buildOrThrow();
 
         ExchangeAzureConfig expected = new ExchangeAzureConfig()
                 .setAzureStorageConnectionString("connection")
-                .setAzureStorageBlockSize(DataSize.of(8, MEGABYTE));
+                .setAzureStorageEndpoint("endpoint")
+                .setAzureStorageBlockSize(DataSize.of(8, MEGABYTE))
+                .setMaxErrorRetries(8);
 
         assertFullMapping(properties, expected);
     }

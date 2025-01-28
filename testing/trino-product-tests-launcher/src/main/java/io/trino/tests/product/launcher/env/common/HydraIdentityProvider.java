@@ -24,9 +24,9 @@ import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.containers.wait.strategy.WaitAllStrategy;
 
 import static io.trino.tests.product.launcher.env.EnvironmentContainers.TESTS;
-import static io.trino.tests.product.launcher.env.EnvironmentContainers.isPrestoContainer;
-import static io.trino.tests.product.launcher.env.common.Standard.CONTAINER_PRESTO_ETC;
+import static io.trino.tests.product.launcher.env.EnvironmentContainers.isTrinoContainer;
 import static io.trino.tests.product.launcher.env.common.Standard.CONTAINER_TEMPTO_PROFILE_CONFIG;
+import static io.trino.tests.product.launcher.env.common.Standard.CONTAINER_TRINO_ETC;
 import static java.util.Objects.requireNonNull;
 import static org.testcontainers.utility.MountableFile.forHostPath;
 
@@ -36,7 +36,7 @@ public class HydraIdentityProvider
     private static final int TTL_ACCESS_TOKEN_IN_SECONDS = 5;
     private static final int TTL_REFRESH_TOKEN_IN_SECONDS = 15;
 
-    private static final String HYDRA_IMAGE = "oryd/hydra:v1.10.6";
+    private static final String HYDRA_IMAGE = "oryd/hydra:v1.11.10";
     private static final String DSN = "postgres://hydra:mysecretpassword@hydra-db:5432/hydra?sslmode=disable";
     private final PortBinder binder;
     private final DockerFiles.ResourceProvider configDir;
@@ -104,14 +104,14 @@ public class HydraIdentityProvider
         builder.containerDependsOn(hydra.getLogicalName(), databaseContainer.getLogicalName());
 
         builder.configureContainers(dockerContainer -> {
-            if (isPrestoContainer(dockerContainer.getLogicalName())) {
+            if (isTrinoContainer(dockerContainer.getLogicalName())) {
                 dockerContainer
                         .withCopyFileToContainer(
                                 forHostPath(configDir.getPath("cert/trino.pem")),
-                                CONTAINER_PRESTO_ETC + "/trino.pem")
+                                CONTAINER_TRINO_ETC + "/trino.pem")
                         .withCopyFileToContainer(
                                 forHostPath(configDir.getPath("cert/hydra.pem")),
-                                CONTAINER_PRESTO_ETC + "/hydra.pem");
+                                CONTAINER_TRINO_ETC + "/hydra.pem");
             }
         });
 
@@ -122,7 +122,7 @@ public class HydraIdentityProvider
                                 CONTAINER_TEMPTO_PROFILE_CONFIG)
                         .withCopyFileToContainer(
                                 forHostPath(configDir.getPath("cert/truststore.jks")),
-                                "/docker/presto-product-tests/truststore.jks"));
+                                "/docker/trino-product-tests/truststore.jks"));
     }
 
     public DockerContainer createClient(

@@ -13,76 +13,113 @@
  */
 package io.trino.plugin.kudu;
 
+import io.airlift.log.Logger;
 import io.trino.sql.planner.plan.LimitNode;
 import io.trino.testing.BaseConnectorTest;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.TestTable;
-import org.testng.SkipException;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.function.Consumer;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static io.trino.plugin.kudu.KuduQueryRunnerFactory.createKuduQueryRunnerTpch;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.MaterializedResult.resultBuilder;
-import static io.trino.testing.assertions.Assert.assertEquals;
-import static io.trino.testing.sql.TestTable.randomTableSuffix;
+import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertNull;
-import static org.testng.Assert.assertTrue;
+import static org.junit.jupiter.api.Assumptions.abort;
 
 public class TestKuduConnectorTest
         extends BaseConnectorTest
 {
-    private TestingKuduServer kuduServer;
+    private static final Logger log = Logger.get(TestKuduConnectorTest.class);
+    protected static final String NATION_COLUMNS = "(nationkey bigint, name varchar(25), regionkey bigint, comment varchar(152))";
+    protected static final String ORDER_COLUMNS = "(orderkey bigint, custkey bigint, orderstatus varchar(1), totalprice double, orderdate date, orderpriority varchar(15), clerk varchar(15), shippriority integer, comment varchar(79))";
+    public static final String REGION_COLUMNS = "(regionkey bigint, name varchar(25), comment varchar(152))";
 
     @Override
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        kuduServer = new TestingKuduServer();
-        return createKuduQueryRunnerTpch(kuduServer, Optional.empty(), REQUIRED_TPCH_TABLES);
-    }
-
-    @AfterClass(alwaysRun = true)
-    public final void destroy()
-    {
-        if (kuduServer != null) {
-            kuduServer.close();
-            kuduServer = null;
-        }
+        return KuduQueryRunnerFactory.builder(closeAfterClass(new TestingKuduServer()))
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_DELETE:
-                return true;
-            case SUPPORTS_RENAME_SCHEMA:
-            case SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT:
-            case SUPPORTS_COMMENT_ON_TABLE:
-            case SUPPORTS_COMMENT_ON_COLUMN:
-            case SUPPORTS_ARRAY:
-            case SUPPORTS_NOT_NULL_CONSTRAINT:
-            case SUPPORTS_TOPN_PUSHDOWN:
-            case SUPPORTS_NEGATIVE_DATE:
-                return false;
+        return switch (connectorBehavior) {
+            case SUPPORTS_ADD_COLUMN_WITH_POSITION,
+                 SUPPORTS_ARRAY,
+                 SUPPORTS_COMMENT_ON_COLUMN,
+                 SUPPORTS_COMMENT_ON_TABLE,
+                 SUPPORTS_CREATE_MATERIALIZED_VIEW,
+                 SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                 SUPPORTS_CREATE_VIEW,
+                 SUPPORTS_MAP_TYPE,
+                 SUPPORTS_NEGATIVE_DATE,
+                 SUPPORTS_NOT_NULL_CONSTRAINT,
+                 SUPPORTS_RENAME_SCHEMA,
+                 SUPPORTS_ROW_TYPE,
+                 SUPPORTS_SET_COLUMN_TYPE,
+                 SUPPORTS_TOPN_PUSHDOWN,
+                 SUPPORTS_TRUNCATE -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
+    }
 
-            case SUPPORTS_ROW_TYPE:
-                return false;
+    @Override
+    protected void createTableForWrites(String createTable, String tableName, Optional<String> primaryKey)
+    {
+        assertUpdate(createKuduTableForWrites(format(createTable, tableName)));
+    }
 
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+    public static String createKuduTableForWrites(String createTable)
+    {
+        // assume primary key column is the first column and there are multiple columns
+        Matcher matcher = Pattern.compile("CREATE TABLE .* \\((\\w+) .*").matcher(createTable);
+        assertThat(matcher.matches()).as(createTable).isTrue();
+        String column = matcher.group(1);
+
+        return createTable.replaceFirst(",", " WITH (primary_key=true),") +
+                format("WITH (partition_by_hash_columns = ARRAY['%s'], partition_by_hash_buckets = 2)", column);
+    }
+
+    @Test
+    public void testUnpartitionedTable()
+    {
+        String tableName = "test_unpartitioned_table" + randomNameSuffix();
+        // success create the table without partition keys
+        assertUpdate("CREATE TABLE " + tableName + " (id int WITH (primary_key=true), val varchar)");
+
+        assertQuery("SELECT COUNT(*) FROM " + tableName, "VALUES 0");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (1, 'hello'), (2, 'world')", 2);
+        assertQuery("SELECT COUNT(*) FROM " + tableName, "VALUES 2");
+
+        assertUpdate("DELETE FROM " + tableName + " WHERE id = 1", 1);
+        assertQuery("SELECT * FROM " + tableName, "VALUES (2, 'world')");
+
+        assertThat(computeScalar("SHOW CREATE TABLE " + tableName))
+                .isEqualTo(format("CREATE TABLE kudu.default.%s (\n" +
+                        "   id integer COMMENT '' WITH (primary_key = true),\n" +
+                        "   val varchar COMMENT ''\n" +
+                        ")\n" +
+                        "WITH (\n" +
+                        "   number_of_replicas = 1,\n" +
+                        "   range_partitions = '[]'\n" +
+                        ")", tableName));
+
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -95,9 +132,34 @@ public class TestKuduConnectorTest
 
     @Test
     @Override
+    public void testCreateSchemaWithNonLowercaseOwnerName()
+    {
+        assertThatThrownBy(super::testCreateSchemaWithNonLowercaseOwnerName)
+                .hasMessage("Creating schema in Kudu connector not allowed if schema emulation is disabled.");
+    }
+
+    @Test
+    @Override
+    public void testCreateSchemaWithLongName()
+    {
+        // TODO: Add a test to BaseKuduConnectorSmokeTest
+        assertThatThrownBy(super::testCreateSchemaWithLongName)
+                .hasMessage("Creating schema in Kudu connector not allowed if schema emulation is disabled.");
+    }
+
+    @Test
+    @Override
     public void testDropNonEmptySchemaWithTable()
     {
         assertThatThrownBy(super::testDropNonEmptySchemaWithTable)
+                .hasMessage("Creating schema in Kudu connector not allowed if schema emulation is disabled.");
+    }
+
+    @Test
+    @Override
+    public void testDropSchemaCascade()
+    {
+        assertThatThrownBy(super::testDropSchemaCascade)
                 .hasMessage("Creating schema in Kudu connector not allowed if schema emulation is disabled.");
     }
 
@@ -118,64 +180,57 @@ public class TestKuduConnectorTest
     }
 
     @Test
+    @Disabled
     @Override
-    public void testDescribeTable()
+    public void testAddAndDropColumnName() {}
+
+    @Test
+    @Disabled
+    @Override
+    public void testRenameColumnName() {}
+
+    @Override
+    protected MaterializedResult getDescribeOrdersResult()
     {
         String extra = "nullable, encoding=auto, compression=default";
-        MaterializedResult expectedColumns = resultBuilder(getSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
+        return resultBuilder(getSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
                 .row("orderkey", "bigint", extra, "")
                 .row("custkey", "bigint", extra, "")
                 .row("orderstatus", "varchar", extra, "")
                 .row("totalprice", "double", extra, "")
-                .row("orderdate", "varchar", extra, "")
+                .row("orderdate", "date", extra, "")
                 .row("orderpriority", "varchar", extra, "")
                 .row("clerk", "varchar", extra, "")
                 .row("shippriority", "integer", extra, "")
                 .row("comment", "varchar", extra, "")
                 .build();
-        MaterializedResult actualColumns = computeActual("DESCRIBE orders");
-        assertEquals(actualColumns, expectedColumns);
     }
 
     @Test
     @Override
     public void testShowColumns()
     {
-        MaterializedResult actual = computeActual("SHOW COLUMNS FROM orders");
-
-        MaterializedResult expectedParametrizedVarchar = resultBuilder(getSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
-                .row("orderkey", "bigint", "nullable, encoding=auto, compression=default", "")
-                .row("custkey", "bigint", "nullable, encoding=auto, compression=default", "")
-                .row("orderstatus", "varchar", "nullable, encoding=auto, compression=default", "")
-                .row("totalprice", "double", "nullable, encoding=auto, compression=default", "")
-                .row("orderdate", "varchar", "nullable, encoding=auto, compression=default", "")
-                .row("orderpriority", "varchar", "nullable, encoding=auto, compression=default", "")
-                .row("clerk", "varchar", "nullable, encoding=auto, compression=default", "")
-                .row("shippriority", "integer", "nullable, encoding=auto, compression=default", "")
-                .row("comment", "varchar", "nullable, encoding=auto, compression=default", "")
-                .build();
-
-        assertEquals(actual, expectedParametrizedVarchar);
+        assertThat(query("SHOW COLUMNS FROM orders")).result().matches(getDescribeOrdersResult());
     }
 
     @Test
     @Override
     public void testShowCreateTable()
     {
-        assertThat((String) computeActual("SHOW CREATE TABLE orders").getOnlyValue())
-                .matches("CREATE TABLE kudu\\.\\w+\\.orders \\Q(\n" +
-                        "   orderkey bigint COMMENT '' WITH ( nullable = true ),\n" +
-                        "   custkey bigint COMMENT '' WITH ( nullable = true ),\n" +
-                        "   orderstatus varchar COMMENT '' WITH ( nullable = true ),\n" +
-                        "   totalprice double COMMENT '' WITH ( nullable = true ),\n" +
-                        "   orderdate varchar COMMENT '' WITH ( nullable = true ),\n" +
-                        "   orderpriority varchar COMMENT '' WITH ( nullable = true ),\n" +
-                        "   clerk varchar COMMENT '' WITH ( nullable = true ),\n" +
-                        "   shippriority integer COMMENT '' WITH ( nullable = true ),\n" +
-                        "   comment varchar COMMENT '' WITH ( nullable = true )\n" +
+        assertThat(computeScalar("SHOW CREATE TABLE orders"))
+                .isEqualTo("CREATE TABLE kudu.default.orders (\n" +
+                        "   orderkey bigint COMMENT '' WITH (nullable = true),\n" +
+                        "   custkey bigint COMMENT '' WITH (nullable = true),\n" +
+                        "   orderstatus varchar COMMENT '' WITH (nullable = true),\n" +
+                        "   totalprice double COMMENT '' WITH (nullable = true),\n" +
+                        "   orderdate date COMMENT '' WITH (nullable = true),\n" +
+                        "   orderpriority varchar COMMENT '' WITH (nullable = true),\n" +
+                        "   clerk varchar COMMENT '' WITH (nullable = true),\n" +
+                        "   shippriority integer COMMENT '' WITH (nullable = true),\n" +
+                        "   comment varchar COMMENT '' WITH (nullable = true)\n" +
                         ")\n" +
                         "WITH (\n" +
-                        "   number_of_replicas = 3,\n" +
+                        "   number_of_replicas = 1,\n" +
                         "   partition_by_hash_buckets = 2,\n" +
                         "   partition_by_hash_columns = ARRAY['row_uuid'],\n" +
                         "   partition_by_range_columns = ARRAY['row_uuid'],\n" +
@@ -191,8 +246,7 @@ public class TestKuduConnectorTest
                 " number_of_replicas = 1\n" +
                 ")");
 
-        MaterializedResult result = computeActual("SHOW CREATE TABLE test_show_create_table");
-        String sqlStatement = (String) result.getOnlyValue();
+        String sqlStatement = (String) computeScalar("SHOW CREATE TABLE test_show_create_table");
         String tableProperties = sqlStatement.split("\\)\\s*WITH\\s*\\(")[1];
         assertTableProperty(tableProperties, "number_of_replicas", "1");
         assertTableProperty(tableProperties, "partition_by_hash_columns", Pattern.quote("ARRAY['id']"));
@@ -235,7 +289,7 @@ public class TestKuduConnectorTest
         if (delimited) {
             nameInSql = "\"" + columnName.replace("\"", "\"\"") + "\"";
         }
-        String tableName = "tcn_" + nameInSql.toLowerCase(ENGLISH).replaceAll("[^a-z0-9]", "") + randomTableSuffix();
+        String tableName = "tcn_" + nameInSql.toLowerCase(ENGLISH).replaceAll("[^a-z0-9]", "") + randomNameSuffix();
 
         try {
             // TODO test with both CTAS *and* CREATE TABLE + INSERT, since they use different connector API methods.
@@ -269,6 +323,16 @@ public class TestKuduConnectorTest
     }
 
     @Test
+    @Override
+    public void testAddNotNullColumnToEmptyTable()
+    {
+        // TODO: Enable this test
+        assertThatThrownBy(super::testAddNotNullColumnToEmptyTable)
+                .hasMessage("must specify at least one key column");
+        abort("TODO");
+    }
+
+    @Test
     public void testProjection()
     {
         assertUpdate("CREATE TABLE IF NOT EXISTS test_projection (" +
@@ -290,10 +354,11 @@ public class TestKuduConnectorTest
     @Override
     public void testExplainAnalyzeWithDeleteWithSubquery()
     {
-        String tableName = "test_delete_" + randomTableSuffix();
+        String tableName = "test_delete_" + randomNameSuffix();
 
         // delete using a subquery
-        assertUpdate("CREATE TABLE " + tableName + " AS SELECT * FROM nation", 25);
+        createTableForWrites("CREATE TABLE %s " + NATION_COLUMNS, tableName, Optional.empty());
+        assertUpdate("INSERT INTO %s SELECT * FROM nation".formatted(tableName), 25);
         assertExplainAnalyze("EXPLAIN ANALYZE DELETE FROM " + tableName + " WHERE regionkey IN (SELECT regionkey FROM region WHERE name LIKE 'A%' LIMIT 1)",
                 "SemiJoin.*");
         assertUpdate("DROP TABLE " + tableName);
@@ -304,102 +369,131 @@ public class TestKuduConnectorTest
     public void testCreateTable()
     {
         // TODO Remove this overriding test once kudu connector can create tables with default partitions
-        String tableName = "test_create_" + randomTableSuffix();
+        String tableName = "test_create_" + randomNameSuffix();
 
         assertUpdate("CREATE TABLE " + tableName + " (" +
                 "id INT WITH (primary_key=true)," +
                 "a bigint, b double, c varchar(50))" +
                 "WITH (partition_by_hash_columns = ARRAY['id'], partition_by_hash_buckets = 2)");
-        assertTrue(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
         assertTableColumnNames(tableName, "id", "a", "b", "c");
-        assertNull(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), tableName));
+        assertThat(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), tableName)).isNull();
 
         assertUpdate("DROP TABLE " + tableName);
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
 
         assertQueryFails("CREATE TABLE " + tableName + " (" +
                         "id INT WITH (primary_key=true)," +
                         "a bad_type, b double, c varchar(50))" +
                         "WITH (partition_by_hash_columns = ARRAY['id'], partition_by_hash_buckets = 2)",
                 ".* Unknown type 'bad_type' for column 'a'");
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
 
-        tableName = "test_create_if_not_exists_" + randomTableSuffix();
+        tableName = "test_create_if_not_exists_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (" +
                 "id INT WITH (primary_key=true)," +
                 "a bigint, b varchar(50), c double)" +
                 "WITH (partition_by_hash_columns = ARRAY['id'], partition_by_hash_buckets = 2)");
-        assertTrue(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
         assertTableColumnNames(tableName, "id", "a", "b", "c");
 
         assertUpdate(
                 "CREATE TABLE IF NOT EXISTS " + tableName + " (" +
-                    "id INT WITH (primary_key=true)," +
-                    "d bigint, e varchar(50))" +
-                    "WITH (partition_by_hash_columns = ARRAY['id'], partition_by_hash_buckets = 2)");
-        assertTrue(getQueryRunner().tableExists(getSession(), tableName));
+                        "id INT WITH (primary_key=true)," +
+                        "d bigint, e varchar(50))" +
+                        "WITH (partition_by_hash_columns = ARRAY['id'], partition_by_hash_buckets = 2)");
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
         assertTableColumnNames(tableName, "id", "a", "b", "c");
 
         assertUpdate("DROP TABLE " + tableName);
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
 
         // Test CREATE TABLE LIKE
-        tableName = "test_create_origin_" + randomTableSuffix();
+        tableName = "test_create_origin_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (" +
                 "id INT WITH (primary_key=true)," +
                 "a bigint, b double, c varchar(50))" +
                 "WITH (partition_by_hash_columns = ARRAY['id'], partition_by_hash_buckets = 2)");
-        assertTrue(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
         assertTableColumnNames(tableName, "id", "a", "b", "c");
 
         // TODO: remove assertThatThrownBy and uncomment the commented lines
         //  and replace finalTableName with tableName
         //  after (https://github.com/trinodb/trino/issues/12469) is fixed
-        String tableNameLike = "test_create_like_" + randomTableSuffix();
+        String tableNameLike = "test_create_like_" + randomNameSuffix();
         final String finalTableName = tableName;
         assertThatThrownBy(() -> assertUpdate(
                 "CREATE TABLE " + tableNameLike + " (LIKE " + finalTableName + ", " +
-                    "d bigint, e varchar(50))" +
-                    "WITH (partition_by_hash_columns = ARRAY['id'], partition_by_hash_buckets = 2)"))
+                        "d bigint, e varchar(50))" +
+                        "WITH (partition_by_hash_columns = ARRAY['id'], partition_by_hash_buckets = 2)"))
                 .hasMessageContaining("This connector does not support creating tables with column comment");
         //assertTrue(getQueryRunner().tableExists(getSession(), tableNameLike));
         //assertTableColumnNames(tableNameLike, "a", "b", "c", "d", "e");
 
         assertUpdate("DROP TABLE " + tableName);
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
 
         //assertUpdate("DROP TABLE " + tableNameLike);
         //assertFalse(getQueryRunner().tableExists(getSession(), tableNameLike));
     }
 
+    @Test
     @Override
     public void testCreateTableWithLongTableName()
     {
         // Overridden because DDL in base class can't create Kudu table due to lack of primary key and required table properties
-        String baseTableName = "test_create_" + randomTableSuffix();
+        String baseTableName = "test_create_" + randomNameSuffix();
         String validTableName = baseTableName + "z".repeat(256 - baseTableName.length());
 
         assertUpdate("CREATE TABLE " + validTableName + "(" +
                 "id INT WITH (primary_key=true)," +
                 "a VARCHAR)" +
                 "WITH (partition_by_hash_columns = ARRAY['id'], partition_by_hash_buckets = 2)");
-        assertTrue(getQueryRunner().tableExists(getSession(), validTableName));
+        assertThat(getQueryRunner().tableExists(getSession(), validTableName)).isTrue();
         assertUpdate("DROP TABLE " + validTableName);
 
         String invalidTableName = baseTableName + "z".repeat(256 - baseTableName.length() + 1);
-        assertThatThrownBy(() -> query("CREATE TABLE " + invalidTableName + "(" +
+        assertThat(query("CREATE TABLE " + invalidTableName + "(" +
                 "id INT WITH (primary_key=true)," +
                 "a VARCHAR)" +
                 "WITH (partition_by_hash_columns = ARRAY['id'], partition_by_hash_buckets = 2)"))
-                .hasMessageContaining("invalid table name");
-        assertFalse(getQueryRunner().tableExists(getSession(), validTableName));
+                .failure().hasMessageContaining("invalid table name");
+        assertThat(getQueryRunner().tableExists(getSession(), validTableName)).isFalse();
     }
 
+    @Test
+    @Override
+    public void testCreateTableWithLongColumnName()
+    {
+        // Overridden because DDL in base class can't create Kudu table due to lack of primary key and required table properties
+        String tableName = "test_long_column" + randomNameSuffix();
+        String baseColumnName = "col";
+
+        int maxLength = maxColumnNameLength().orElseThrow();
+
+        String validColumnName = baseColumnName + "z".repeat(maxLength - baseColumnName.length());
+        assertUpdate("CREATE TABLE " + tableName + " (" +
+                "id INT WITH (primary_key=true)," +
+                validColumnName + " bigint)" +
+                "WITH (partition_by_hash_columns = ARRAY['id'], partition_by_hash_buckets = 2)");
+        assertThat(columnExists(tableName, validColumnName)).isTrue();
+        assertUpdate("DROP TABLE " + tableName);
+
+        String invalidColumnName = validColumnName + "z";
+        assertThatThrownBy(() -> assertUpdate("CREATE TABLE " + tableName + " (" +
+                "id INT WITH (primary_key=true)," +
+                invalidColumnName + " bigint)" +
+                "WITH (partition_by_hash_columns = ARRAY['id'], partition_by_hash_buckets = 2)"))
+                .satisfies(this::verifyColumnNameLengthFailurePermissible);
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
+    }
+
+    @Test
     @Override
     public void testCreateTableWithColumnComment()
     {
         // TODO https://github.com/trinodb/trino/issues/12469 Support column comment when creating tables
-        String tableName = "test_create_" + randomTableSuffix();
+        String tableName = "test_create_" + randomNameSuffix();
 
         assertQueryFails(
                 "CREATE TABLE " + tableName + "(" +
@@ -411,20 +505,21 @@ public class TestKuduConnectorTest
         assertUpdate("DROP TABLE IF EXISTS " + tableName);
     }
 
+    @Test
     @Override
     public void testDropTable()
     {
         // TODO Remove this overriding test once kudu connector can create tables with default partitions
-        String tableName = "test_drop_table_" + randomTableSuffix();
+        String tableName = "test_drop_table_" + randomNameSuffix();
         assertUpdate(
                 "CREATE TABLE " + tableName + "(" +
-                    "id INT WITH (primary_key=true)," +
-                    "col bigint)" +
-                    "WITH (partition_by_hash_columns = ARRAY['id'], partition_by_hash_buckets = 2)");
-        assertTrue(getQueryRunner().tableExists(getSession(), tableName));
+                        "id INT WITH (primary_key=true)," +
+                        "col bigint)" +
+                        "WITH (partition_by_hash_columns = ARRAY['id'], partition_by_hash_buckets = 2)");
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
 
         assertUpdate("DROP TABLE " + tableName);
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
     }
 
     @Override
@@ -437,7 +532,7 @@ public class TestKuduConnectorTest
     @Override
     public void testAddColumnWithComment()
     {
-        String tableName = "test_add_column_with_comment" + randomTableSuffix();
+        String tableName = "test_add_column_with_comment" + randomNameSuffix();
 
         assertUpdate("CREATE TABLE IF NOT EXISTS " + tableName + " (" +
                 "id INT WITH (primary_key=true), " +
@@ -452,10 +547,44 @@ public class TestKuduConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
+    @Override
+    public void testAddColumnWithCommentSpecialCharacter(String comment)
+    {
+        // Override because Kudu connector doesn't support creating a new table without partition columns
+        try (TestTable table = newTrinoTable(
+                "test_add_col_",
+                "(id INT WITH (primary_key=true), a_varchar varchar) WITH (partition_by_hash_columns = ARRAY['id'], partition_by_hash_buckets = 2)")) {
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN b_varchar varchar COMMENT " + varcharLiteral(comment));
+            assertThat(getColumnComment(table.getName(), "b_varchar")).isEqualTo(comment);
+        }
+    }
+
+    @Test
+    public void testAddColumnWithDecimal()
+    {
+        String tableName = "test_add_column_with_decimal" + randomNameSuffix();
+
+        assertUpdate("CREATE TABLE " + tableName + "(" +
+                "id INT WITH (primary_key=true), " +
+                "a_varchar VARCHAR" +
+                ") WITH (" +
+                " partition_by_hash_columns = ARRAY['id'], " +
+                " partition_by_hash_buckets = 2" +
+                ")");
+
+        assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN b_decimal decimal(14,5)");
+        assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN c_decimal decimal(35,5)");
+
+        assertThat(getColumnType(tableName, "b_decimal")).isEqualTo("decimal(14,5)");
+        assertThat(getColumnType(tableName, "c_decimal")).isEqualTo("decimal(35,5)");
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
     @Test
     public void testInsertIntoTableHavingRowUuid()
     {
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_insert_", " AS SELECT * FROM region WITH NO DATA")) {
+        try (TestTable table = newTrinoTable("test_insert_", " AS SELECT * FROM region WITH NO DATA")) {
             assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM region", 5);
 
             assertThat(query("SELECT * FROM " + table.getName()))
@@ -468,7 +597,7 @@ public class TestKuduConnectorTest
     public void testInsertUnicode()
     {
         // TODO Remove this overriding test once kudu connector can create tables with default partitions
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_insert_unicode_",
+        try (TestTable table = newTrinoTable("test_insert_unicode_",
                 "(test varchar(50) WITH (primary_key=true)) " +
                         "WITH (partition_by_hash_columns = ARRAY['test'], partition_by_hash_buckets = 2)")) {
             assertUpdate("INSERT INTO " + table.getName() + "(test) VALUES 'Hello', U&'hello\\6d4B\\8Bd5world\\7F16\\7801' ", 2);
@@ -476,7 +605,7 @@ public class TestKuduConnectorTest
                     .containsExactlyInAnyOrder("Hello", "hello测试world编码");
         }
 
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_insert_unicode_",
+        try (TestTable table = newTrinoTable("test_insert_unicode_",
                 "(test varchar(50) WITH (primary_key=true)) " +
                         "WITH (partition_by_hash_columns = ARRAY['test'], partition_by_hash_buckets = 2)")) {
             assertUpdate("INSERT INTO " + table.getName() + "(test) VALUES 'aa', 'bé'", 2);
@@ -487,7 +616,7 @@ public class TestKuduConnectorTest
             assertQueryReturnsEmptyResult("SELECT test FROM " + table.getName() + " WHERE test = 'ba'");
         }
 
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_insert_unicode_",
+        try (TestTable table = newTrinoTable("test_insert_unicode_",
                 "(test varchar(50) WITH (primary_key=true)) " +
                         "WITH (partition_by_hash_columns = ARRAY['test'], partition_by_hash_buckets = 2)")) {
             assertUpdate("INSERT INTO " + table.getName() + "(test) VALUES 'a', 'é'", 2);
@@ -504,7 +633,7 @@ public class TestKuduConnectorTest
     public void testInsertHighestUnicodeCharacter()
     {
         // TODO Remove this overriding test once kudu connector can create tables with default partitions
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_insert_unicode_",
+        try (TestTable table = newTrinoTable("test_insert_unicode_",
                 "(test varchar(50) WITH (primary_key=true)) " +
                         "WITH (partition_by_hash_columns = ARRAY['test'], partition_by_hash_buckets = 2)")) {
             assertUpdate("INSERT INTO " + table.getName() + "(test) VALUES 'Hello', U&'hello\\6d4B\\8Bd5\\+10FFFFworld\\7F16\\7801' ", 2);
@@ -513,13 +642,12 @@ public class TestKuduConnectorTest
         }
     }
 
+    @Test
     @Override
     public void testInsertNegativeDate()
     {
         // TODO Remove this overriding test once kudu connector can create tables with default partitions
-        // TODO Update this test once kudu connector supports DATE type: https://github.com/trinodb/trino/issues/11009
-        // DATE type is not supported by Kudu connector
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "insert_date",
+        try (TestTable table = newTrinoTable("insert_date",
                 "(dt DATE WITH (primary_key=true)) " +
                         "WITH (partition_by_hash_columns = ARRAY['dt'], partition_by_hash_buckets = 2)")) {
             assertQueryFails(format("INSERT INTO %s VALUES (DATE '-0001-01-01')", table.getName()), errorMessageForInsertNegativeDate("-0001-01-01"));
@@ -529,16 +657,113 @@ public class TestKuduConnectorTest
     @Override
     protected String errorMessageForInsertNegativeDate(String date)
     {
-        return "Insert query has mismatched column types: Table: \\[varchar\\], Query: \\[date\\]";
+        return "Date value <-719893>} is out of range '0001-01-01':'9999-12-31'";
+    }
+
+    @Test
+    @Override
+    public void testDelete()
+    {
+        // delete successive parts of the table
+        withTableName("test_delete", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
+            assertUpdate("DELETE FROM " + tableName + " WHERE custkey <= 100", "SELECT count(*) FROM orders WHERE custkey <= 100");
+            assertQuery("SELECT * FROM " + tableName, "SELECT * FROM orders WHERE custkey > 100");
+
+            assertUpdate("DELETE FROM " + tableName + " WHERE custkey <= 300", "SELECT count(*) FROM orders WHERE custkey > 100 AND custkey <= 300");
+            assertQuery("SELECT * FROM " + tableName, "SELECT * FROM orders WHERE custkey > 300");
+
+            assertUpdate("DELETE FROM " + tableName + " WHERE custkey <= 500", "SELECT count(*) FROM orders WHERE custkey > 300 AND custkey <= 500");
+            assertQuery("SELECT * FROM " + tableName, "SELECT * FROM orders WHERE custkey > 500");
+        });
+
+        withTableName("test_delete", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
+            assertUpdate("DELETE FROM " + tableName + " WHERE custkey <= 100", "SELECT count(*) FROM orders WHERE custkey <= 100");
+            assertQuery("SELECT * FROM " + tableName, "SELECT * FROM orders WHERE custkey > 100");
+
+            assertUpdate("DELETE FROM " + tableName + " WHERE custkey <= 300", "SELECT count(*) FROM orders WHERE custkey > 100 AND custkey <= 300");
+            assertQuery("SELECT * FROM " + tableName, "SELECT * FROM orders WHERE custkey > 300");
+
+            assertUpdate("DELETE FROM " + tableName + " WHERE custkey <= 500", "SELECT count(*) FROM orders WHERE custkey > 300 AND custkey <= 500");
+            assertQuery("SELECT * FROM " + tableName, "SELECT * FROM orders WHERE custkey > 500");
+        });
+
+        // delete without matching any rows
+        withTableName("test_delete", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
+            assertUpdate("DELETE FROM " + tableName + " WHERE orderkey < 0", 0);
+        });
+
+        // delete with a predicate that optimizes to false
+        withTableName("test_delete", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
+            assertUpdate("DELETE FROM " + tableName + " WHERE orderkey > 5 AND orderkey < 4", 0);
+        });
+    }
+
+    @Test
+    @Override
+    public void testDeleteWithLike()
+    {
+        withTableName("test_with_like", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + NATION_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO %s SELECT * FROM nation".formatted(tableName), 25);
+            assertUpdate("DELETE FROM " + tableName + " WHERE name LIKE '%a%'", "VALUES 0");
+            assertUpdate("DELETE FROM " + tableName + " WHERE name LIKE '%A%'", "SELECT count(*) FROM nation WHERE name LIKE '%A%'");
+        });
     }
 
     @Override
     protected TestTable createTableWithOneIntegerColumn(String namePrefix)
     {
         // TODO Remove this overriding method once kudu connector can create tables with default partitions
-        return new TestTable(getQueryRunner()::execute, namePrefix,
+        return newTrinoTable(namePrefix,
                 "(col integer WITH (primary_key=true)) " +
-                "WITH (partition_by_hash_columns = ARRAY['col'], partition_by_hash_buckets = 2)");
+                        "WITH (partition_by_hash_columns = ARRAY['col'], partition_by_hash_buckets = 2)");
+    }
+
+    /**
+     * This test fails intermittently because Kudu doesn't have strong enough
+     * semantics to support writing from multiple threads.
+     */
+    @Test
+    @Disabled
+    @Override
+    public void testUpdateWithPredicates()
+    {
+        withTableName("test_update_with_predicates", tableName -> {
+            createTableForWrites("CREATE TABLE %s (a INT, b INT, c INT)", tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " VALUES (1, 2, 3), (11, 12, 13), (21, 22, 23)", 3);
+            assertUpdate("UPDATE " + tableName + " SET a = a - 1 WHERE c = 3", 1);
+            assertQuery("SELECT * FROM " + tableName, "VALUES (0, 2, 3), (11, 12, 13), (21, 22, 23)");
+
+            assertUpdate("UPDATE " + tableName + " SET c = c + 1 WHERE a = 11", 1);
+            assertQuery("SELECT * FROM " + tableName, "VALUES (0, 2, 3), (11, 12, 14), (21, 22, 23)");
+
+            assertUpdate("UPDATE " + tableName + " SET b = b * 2 WHERE b = 22", 1);
+            assertQuery("SELECT * FROM " + tableName, "VALUES (0, 2, 3), (11, 12, 14), (21, 44, 23)");
+        });
+    }
+
+    /**
+     * This test fails intermittently because Kudu doesn't have strong enough
+     * semantics to support writing from multiple threads.
+     */
+    @Test
+    @Override
+    public void testUpdateAllValues()
+    {
+        withTableName("test_update_all_columns", tableName -> {
+            createTableForWrites("CREATE TABLE %s (a INT, b INT, c INT)", tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " VALUES (1, 2, 3), (11, 12, 13), (21, 22, 23)", 3);
+            assertUpdate("UPDATE " + tableName + " SET b = b - 1, c = c * 2", 3);
+            assertQuery("SELECT * FROM " + tableName, "VALUES (1, 1, 6), (11, 11, 26), (21, 21, 46)");
+        });
     }
 
     @Test
@@ -546,73 +771,319 @@ public class TestKuduConnectorTest
     public void testWrittenStats()
     {
         // TODO Kudu connector supports CTAS and inserts, but the test would fail
-        throw new SkipException("TODO");
-    }
-
-    @Override
-    public void testReadMetadataWithRelationsConcurrentModifications()
-    {
-        try {
-            super.testReadMetadataWithRelationsConcurrentModifications();
-        }
-        catch (Exception expected) {
-            // The test failure is not guaranteed
-            // TODO (https://github.com/trinodb/trino/issues/12974): shouldn't fail
-            assertThat(expected)
-                    .hasMessageMatching(".* table .* was deleted: Table deleted at .* UTC");
-            throw new SkipException("to be fixed");
-        }
-    }
-
-    @Override
-    protected String createTableSqlTemplateForConcurrentModifications()
-    {
-        // TODO Remove this overriding method once kudu connector can create tables with default partitions
-        return "CREATE TABLE %s(a integer WITH (primary_key=true)) " +
-                "WITH (partition_by_hash_columns = ARRAY['a'], partition_by_hash_buckets = 2)";
     }
 
     @Test
     @Override
-    public void testCreateTableAsSelectNegativeDate()
+    public void testVarcharCastToDateInPredicate()
     {
-        // Map date column type to varchar
-        String tableName = "negative_date_" + randomTableSuffix();
+        assertThatThrownBy(super::testVarcharCastToDateInPredicate)
+                .hasStackTraceContaining("must specify at least one key column");
 
-        try {
-            assertUpdate(format("CREATE TABLE %s AS SELECT DATE '-0001-01-01' AS dt", tableName), 1);
-            assertQuery("SELECT * FROM " + tableName, "VALUES '-0001-01-01'");
-            assertQuery(format("SELECT * FROM %s WHERE dt = '-0001-01-01'", tableName), "VALUES '-0001-01-01'");
-        }
-        finally {
-            assertUpdate("DROP TABLE IF EXISTS " + tableName);
-        }
+        abort("TODO: implement the test for Kudu");
     }
 
     @Test
     @Override
+    @SuppressWarnings("deprecation")
     public void testDateYearOfEraPredicate()
     {
-        assertThatThrownBy(super::testDateYearOfEraPredicate)
-                .hasStackTraceContaining("Cannot apply operator: varchar = date");
+        // Override because the connector throws an exception instead of an empty result when the value is out of supported range
+        assertQuery("SELECT orderdate FROM orders WHERE orderdate = DATE '1997-09-14'", "VALUES DATE '1997-09-14'");
+        // TODO Replace failure with a TrinoException
+        assertThat(query("SELECT * FROM orders WHERE orderdate = DATE '-1996-09-14'"))
+                .nonTrinoExceptionFailure().hasMessageContaining("integer value out of range for Type: date column: -1448295");
     }
 
     @Test
     @Override
     public void testCharVarcharComparison()
     {
+        // TODO https://github.com/trinodb/trino/issues/3597 Fix Kudu CREATE TABLE AS SELECT with char(n) type does not preserve trailing spaces
         assertThatThrownBy(super::testCharVarcharComparison)
-                .hasMessageContaining("For query: ")
+                .hasMessageContaining("For query")
                 .hasMessageContaining("Actual rows")
                 .hasMessageContaining("Expected rows");
 
-        throw new SkipException("TODO");
+        abort("TODO");
     }
 
     @Test
     public void testLimitPushdown()
     {
         assertThat(query("SELECT name FROM nation LIMIT 30")).isNotFullyPushedDown(LimitNode.class); // Use high limit for result determinism
+    }
+
+    @Test
+    @Override
+    public void testDeleteWithComplexPredicate()
+    {
+        withTableName("test_delete_complex", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
+            assertUpdate("DELETE FROM " + tableName + " WHERE orderkey % 2 = 0", "SELECT count(*) FROM orders WHERE orderkey % 2 = 0");
+            assertQuery("SELECT * FROM " + tableName, "SELECT * FROM orders WHERE orderkey % 2 <> 0");
+
+            assertUpdate("DELETE FROM " + tableName, "SELECT count(*) FROM orders WHERE orderkey % 2 <> 0");
+            assertQuery("SELECT * FROM " + tableName, "SELECT custkey, orderkey FROM orders LIMIT 0");
+
+            assertUpdate("DELETE FROM " + tableName + " WHERE rand() < 0", 0);
+        });
+    }
+
+    @Test
+    @Override
+    public void testDeleteWithSubquery()
+    {
+        // TODO (https://github.com/trinodb/trino/issues/13210) Migrate these tests to AbstractTestEngineOnlyQueries
+        withTableName("test_delete_subquery", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + NATION_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM nation", 25);
+            assertUpdate("DELETE FROM " + tableName + " WHERE regionkey IN (SELECT regionkey FROM region WHERE name LIKE 'A%')", 15);
+            assertQuery(
+                    "SELECT * FROM " + tableName,
+                    "SELECT * FROM nation WHERE regionkey IN (SELECT regionkey FROM region WHERE name NOT LIKE 'A%')");
+        });
+
+        withTableName("test_delete_subquery", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
+
+            // delete using a scalar and EXISTS subquery
+            assertUpdate("DELETE FROM " + tableName + " WHERE orderkey = (SELECT orderkey FROM orders ORDER BY orderkey LIMIT 1)", 1);
+            assertUpdate("DELETE FROM " + tableName + " WHERE orderkey = (SELECT orderkey FROM orders WHERE false)", 0);
+            assertUpdate("DELETE FROM " + tableName + " WHERE EXISTS(SELECT 1 WHERE false)", 0);
+            assertUpdate("DELETE FROM " + tableName + " WHERE EXISTS(SELECT 1)", "SELECT count(*) - 1 FROM orders");
+        });
+
+        withTableName("test_delete_subquery", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + NATION_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM nation", 25);
+
+            // delete using correlated EXISTS subquery
+            assertUpdate(format("DELETE FROM %1$s WHERE EXISTS(SELECT regionkey FROM region WHERE regionkey = %1$s.regionkey AND name LIKE 'A%%')", tableName), 15);
+            assertQuery(
+                    "SELECT * FROM " + tableName,
+                    "SELECT * FROM nation WHERE regionkey IN (SELECT regionkey FROM region WHERE name NOT LIKE 'A%')");
+        });
+
+        withTableName("test_delete_subquery", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + NATION_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM nation", 25);
+            // delete using correlated IN subquery
+            assertUpdate(format("DELETE FROM %1$s WHERE regionkey IN (SELECT regionkey FROM region WHERE regionkey = %1$s.regionkey AND name LIKE 'A%%')", tableName), 15);
+            assertQuery(
+                    "SELECT * FROM " + tableName,
+                    "SELECT * FROM nation WHERE regionkey IN (SELECT regionkey FROM region WHERE name NOT LIKE 'A%')");
+        });
+    }
+
+    @Test
+    @Override
+    public void testDeleteWithSemiJoin()
+    {
+        withTableName("test_delete_semijoin", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + NATION_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM nation", 25);
+            // delete with multiple SemiJoin
+            assertUpdate(
+                    "DELETE FROM " + tableName + " " +
+                            "WHERE regionkey IN (SELECT regionkey FROM region WHERE name LIKE 'A%') " +
+                            "  AND regionkey IN (SELECT regionkey FROM region WHERE length(comment) < 50)",
+                    10);
+            assertQuery(
+                    "SELECT * FROM " + tableName,
+                    "SELECT * FROM nation " +
+                            "WHERE regionkey IN (SELECT regionkey FROM region WHERE name NOT LIKE 'A%') " +
+                            "  OR regionkey IN (SELECT regionkey FROM region WHERE length(comment) >= 50)");
+        });
+
+        withTableName("test_delete_semijoin", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
+
+            // delete with SemiJoin null handling
+            assertUpdate(
+                    "DELETE FROM " + tableName + "\n" +
+                            "WHERE (orderkey IN (SELECT CASE WHEN orderkey % 3 = 0 THEN NULL ELSE orderkey END FROM tpch.tiny.lineitem)) IS NULL\n",
+                    "SELECT count(*) FROM orders\n" +
+                            "WHERE (orderkey IN (SELECT CASE WHEN orderkey % 3 = 0 THEN NULL ELSE orderkey END FROM lineitem)) IS NULL\n");
+            assertQuery(
+                    "SELECT * FROM " + tableName,
+                    "SELECT * FROM orders\n" +
+                            "WHERE (orderkey IN (SELECT CASE WHEN orderkey % 3 = 0 THEN NULL ELSE orderkey END FROM lineitem)) IS NOT NULL\n");
+        });
+    }
+
+    @Test
+    @Override
+    public void testDeleteWithVarcharPredicate()
+    {
+        withTableName("test_delete_varchar", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
+            assertUpdate("DELETE FROM " + tableName + " WHERE orderstatus = 'O'", "SELECT count(*) FROM orders WHERE orderstatus = 'O'");
+            assertQuery("SELECT * FROM " + tableName, "SELECT * FROM orders WHERE orderstatus <> 'O'");
+        });
+    }
+
+    @Test
+    @Override
+    public void testDeleteAllDataFromTable()
+    {
+        withTableName("test_delete_all_data", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + REGION_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM region", 5);
+
+            // not using assertUpdate as some connectors provide update count and some not
+            getQueryRunner().execute("DELETE FROM " + tableName);
+            assertQuery("SELECT count(*) FROM " + tableName, "VALUES 0");
+        });
+    }
+
+    @Test
+    @Override
+    public void testRowLevelDelete()
+    {
+        withTableName("test_row_delete", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + REGION_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM region", 5);
+            assertUpdate("DELETE FROM " + tableName + " WHERE regionkey = 2", 1);
+            assertQuery("SELECT count(*) FROM " + tableName, "VALUES 4");
+        });
+    }
+
+    /**
+     * createTableForWrites will create the table using the first column as the primary key.
+     * Attempting to update the primary key (`nationkey` in this case) caused a failure due to duplicate values.
+     * This override modifies the test to focus on updating the `regionkey` instead.
+     */
+    @Test
+    @Override
+    public void testUpdate()
+    {
+        withTableName("test_update", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + NATION_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM nation", 25);
+            assertUpdate("UPDATE " + tableName + " SET regionkey = 100 WHERE regionkey = 2", 5);
+            assertQuery("SELECT count(*) FROM " + tableName + " WHERE regionkey = 100", "VALUES 5");
+        });
+    }
+
+    /**
+     * This test fails intermittently because Kudu doesn't have strong enough
+     * semantics to support writing from multiple threads.
+     */
+    @Test
+    @Disabled
+    @Override
+    public void testUpdateMultipleCondition() {}
+
+    /**
+     * The test is overridden because Kudu requires nullable columns to be explicitly specified in the creation statement using `WITH (nullable=true)`.
+     * Additionally, the first column will be the primary key in the table, override to use `regionkey` to test.
+     */
+    @Test
+    @Override
+    public void testUpdateWithNullValues()
+    {
+        withTableName("test_update_nulls", tableName -> {
+            assertUpdate(createKuduTableForWrites("CREATE TABLE %s (nationkey bigint, name varchar(25), regionkey bigint WITH (nullable=true), comment varchar(152))".formatted(tableName)));
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM nation", 25);
+
+            assertQuery("SELECT count(*) FROM " + tableName + " WHERE regionkey IS NULL", "VALUES 0");
+            assertUpdate("UPDATE " + tableName + " SET regionkey = NULL WHERE nationkey > 20", 4);
+            assertQuery("SELECT count(*) FROM " + tableName + " WHERE regionkey IS NULL", "VALUES 4");
+
+            // Kudu connector does not have ConnectorCapabilities with `SUPPORTS_NOT_NULL_CONSTRAINT`, but column definition not null by default
+            // Here verify set null to the not null column will fail in Kudu
+            assertThatThrownBy(() -> getQueryRunner().execute("UPDATE " + tableName + " SET nationkey = NULL WHERE nationkey > 20"))
+                    .isInstanceOf(RuntimeException.class)
+                    .hasMessage("nationkey cannot be set to null");
+        });
+    }
+
+    /**
+     * This test fails intermittently because Kudu doesn't have strong enough
+     * semantics to support writing from multiple threads.
+     */
+    @Test
+    @Disabled
+    @Override
+    public void testRowLevelUpdate()
+    {
+        withTableName("test_update", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + NATION_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM nation", 25);
+            assertUpdate("UPDATE " + tableName + " SET nationkey = 100 + nationkey WHERE regionkey = 2", 5);
+            assertThat(query("SELECT * FROM " + tableName))
+                    .skippingTypesCheck()
+                    .matches("SELECT IF(regionkey=2, nationkey + 100, nationkey) nationkey, name, regionkey, comment FROM tpch.tiny.nation");
+
+            // UPDATE after UPDATE
+            // Adding 1000 avoids duplicate keys
+            assertUpdate("UPDATE " + tableName + " SET nationkey = nationkey * 2 + 1000 WHERE regionkey IN (2,3)", 10);
+            assertThat(query("SELECT * FROM " + tableName))
+                    .skippingTypesCheck()
+                    .matches("SELECT CASE regionkey WHEN 2 THEN 2*(nationkey+100) + 1000 WHEN 3 THEN nationkey * 2 + 1000 ELSE nationkey END nationkey, name, regionkey, comment FROM tpch.tiny.nation");
+        });
+    }
+
+    /**
+     * This test fails intermittently because Kudu doesn't have strong enough
+     * semantics to support writing from multiple threads.
+     */
+    @Test
+    @Disabled
+    @Override
+    public void testUpdateCaseSensitivity() {}
+
+    @Test
+    @Override
+    public void testUpdateRowConcurrently()
+            throws Exception
+    {
+        abort("Kudu doesn't support concurrent update of different columns in a row");
+    }
+
+    @Test
+    @Override
+    protected void testUpdateWithSubquery()
+    {
+        withTableName("test_update_with_subquery", tableName -> {
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
+            assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
+
+            assertQuery("SELECT count(*) FROM " + tableName + " WHERE shippriority = 101 AND custkey = (SELECT min(custkey) FROM customer)", "VALUES 0");
+            assertUpdate("UPDATE " + tableName + " SET shippriority = 101 WHERE custkey = (SELECT min(custkey) FROM customer)", 9);
+            assertQuery("SELECT count(*) FROM " + tableName + " WHERE shippriority = 101 AND custkey = (SELECT min(custkey) FROM customer)", "VALUES 9");
+        });
+    }
+
+    @Test
+    @Override
+    public void testCreateTableWithTableComment()
+    {
+        // TODO Remove this overriding test once kudu connector can create tables with default partitions
+        String tableName = "test_create_" + randomNameSuffix();
+
+        assertUpdate("CREATE TABLE " + tableName + " (a bigint WITH (primary_key=true)) COMMENT 'test comment' " +
+                "WITH (partition_by_hash_columns = ARRAY['a'], partition_by_hash_buckets = 2)");
+        assertThat(getTableComment("kudu", "default", tableName)).isEqualTo("test comment");
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Override
+    protected void testCreateTableWithTableCommentSpecialCharacter(String comment)
+    {
+        // TODO Remove this overriding test once kudu connector can create tables with default partitions
+        try (TestTable table = newTrinoTable(
+                "test_create_",
+                "(a bigint WITH (primary_key=true)) COMMENT " + varcharLiteral(comment) +
+                        "WITH (partition_by_hash_columns = ARRAY['a'], partition_by_hash_buckets = 2)")) {
+            assertThat(getTableComment("kudu", "default", table.getName())).isEqualTo(comment);
+        }
     }
 
     @Override
@@ -627,10 +1098,14 @@ public class TestKuduConnectorTest
             return Optional.of(dataMappingTestSetup.asUnsupported());
         }
 
-        if (typeName.equals("date") // date gets stored as varchar
-                || typeName.equals("varbinary") // TODO (https://github.com/trinodb/trino/issues/3416)
+        if (typeName.equals("varbinary") // TODO (https://github.com/trinodb/trino/issues/3416)
                 || (typeName.startsWith("char") && dataMappingTestSetup.getSampleValueLiteral().contains(" "))) { // TODO: https://github.com/trinodb/trino/issues/3597
             // TODO this should either work or fail cleanly
+            return Optional.empty();
+        }
+
+        if (typeName.equals("date") && dataMappingTestSetup.getSampleValueLiteral().equals("DATE '1582-10-05'")) {
+            // Kudu connector returns +10 days during julian->gregorian switch. The test case exists in TestKuduTypeMapping.testDate().
             return Optional.empty();
         }
 
@@ -640,7 +1115,7 @@ public class TestKuduConnectorTest
     @Override
     protected TestTable createTableWithDefaultColumns()
     {
-        throw new SkipException("Kudu connector does not support column default values");
+        return abort("Kudu connector does not support column default values");
     }
 
     @Override
@@ -656,9 +1131,55 @@ public class TestKuduConnectorTest
                 ")";
     }
 
+    @Override
+    protected OptionalInt maxTableNameLength()
+    {
+        return OptionalInt.of(256);
+    }
+
+    @Override
+    protected void verifyTableNameLengthFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessageContaining("invalid table name: identifier");
+    }
+
+    @Override
+    protected OptionalInt maxColumnNameLength()
+    {
+        return OptionalInt.of(256);
+    }
+
+    @Override
+    protected void verifyColumnNameLengthFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessageContaining("invalid column name: identifier");
+    }
+
+    @Override
+    protected String errorMessageForCreateTableAsSelectNegativeDate(String date)
+    {
+        return ".*Date value <-719893>} is out of range '0001-01-01':'9999-12-31'.*";
+    }
+
     private void assertTableProperty(String tableProperties, String key, String regexValue)
     {
-        assertTrue(Pattern.compile(key + "\\s*=\\s*" + regexValue + ",?\\s+").matcher(tableProperties).find(),
-                "Not found: " + key + " = " + regexValue + " in " + tableProperties);
+        assertThat(Pattern.compile(key + "\\s*=\\s*" + regexValue + ",?\\s+").matcher(tableProperties).find())
+                .describedAs("Not found: " + key + " = " + regexValue + " in " + tableProperties)
+                .isTrue();
+    }
+
+    private void withTableName(String prefix, Consumer<String> consumer)
+    {
+        String tableName = "%s_%s".formatted(prefix, randomNameSuffix());
+        try {
+            consumer.accept(tableName);
+        }
+        catch (Exception e) {
+            log.error(e);
+            throw new RuntimeException(e);
+        }
+        finally {
+            assertUpdate("DROP TABLE " + tableName);
+        }
     }
 }

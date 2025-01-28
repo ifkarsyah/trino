@@ -18,8 +18,7 @@ import com.google.common.util.concurrent.ListenableFuture;
 import io.trino.operator.WorkProcessor.ProcessState;
 import io.trino.operator.WorkProcessor.Transformation;
 import io.trino.operator.WorkProcessor.TransformationState;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.util.Comparator;
 import java.util.Iterator;
@@ -111,7 +110,7 @@ public final class WorkProcessorUtils
     static <T> WorkProcessor<T> mergeSorted(Iterable<WorkProcessor<T>> processorIterable, Comparator<T> comparator)
     {
         requireNonNull(comparator, "comparator is null");
-        Iterator<WorkProcessor<T>> processorIterator = requireNonNull(processorIterable, "processorIterable is null").iterator();
+        Iterator<WorkProcessor<T>> processorIterator = processorIterable.iterator();
         checkArgument(processorIterator.hasNext(), "There must be at least one base processor");
         PriorityQueue<ElementAndProcessor<T>> queue = new PriorityQueue<>(2, comparing(ElementAndProcessor::getElement, comparator));
 
@@ -185,20 +184,42 @@ public final class WorkProcessorUtils
 
     static <T> WorkProcessor<T> blocking(WorkProcessor<T> processor, Supplier<ListenableFuture<Void>> futureSupplier)
     {
-        requireNonNull(processor, "processor is null");
-        requireNonNull(futureSupplier, "futureSupplier is null");
-        return processor.transform(element -> {
-            if (element == null) {
-                return TransformationState.finished();
+        return create(new BlockingProcess<>(processor, futureSupplier), ProcessState.blocked(futureSupplier.get()));
+    }
+
+    private static class BlockingProcess<T>
+            implements WorkProcessor.Process<T>
+    {
+        final WorkProcessor<T> processor;
+        final Supplier<ListenableFuture<Void>> futureSupplier;
+        ProcessState<T> state;
+
+        BlockingProcess(WorkProcessor<T> processor, Supplier<ListenableFuture<Void>> futureSupplier)
+        {
+            this.processor = requireNonNull(processor, "processor is null");
+            this.futureSupplier = requireNonNull(futureSupplier, "futureSupplier is null");
+        }
+
+        @Override
+        public ProcessState<T> process()
+        {
+            if (state == null) {
+                state = getNextState(processor);
             }
 
             ListenableFuture<Void> future = futureSupplier.get();
             if (!future.isDone()) {
-                return TransformationState.blocked(future);
+                if (state.getType() == ProcessState.Type.YIELD) {
+                    // clear yielded state to continue computations in the next iteration
+                    state = null;
+                }
+                return ProcessState.blocked(future);
             }
 
-            return TransformationState.ofResult(element);
-        });
+            ProcessState<T> result = state;
+            state = null;
+            return result;
+        }
     }
 
     static <T> WorkProcessor<T> processEntryMonitor(WorkProcessor<T> processor, Runnable monitor)
@@ -366,6 +387,11 @@ public final class WorkProcessorUtils
         return new ProcessWorkProcessor<>(process);
     }
 
+    static <T> WorkProcessor<T> create(WorkProcessor.Process<T> process, ProcessState<T> initialState)
+    {
+        return new ProcessWorkProcessor<>(process, initialState);
+    }
+
     private static class ProcessWorkProcessor<T>
             implements WorkProcessor<T>
     {
@@ -376,7 +402,13 @@ public final class WorkProcessorUtils
 
         ProcessWorkProcessor(WorkProcessor.Process<T> process)
         {
+            this(process, ProcessState.yielded());
+        }
+
+        ProcessWorkProcessor(WorkProcessor.Process<T> process, ProcessState<T> initialState)
+        {
             this.process = requireNonNull(process, "process is null");
+            this.state = requireNonNull(initialState, "initialState is null");
         }
 
         @Override

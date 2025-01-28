@@ -16,8 +16,7 @@ package io.trino.spi.procedure;
 import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.type.Type;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.lang.invoke.MethodHandle;
 import java.util.HashSet;
@@ -34,14 +33,21 @@ public class Procedure
     private final String schema;
     private final String name;
     private final List<Argument> arguments;
+    private final boolean requireNamedArguments;
     private final MethodHandle methodHandle;
 
     public Procedure(String schema, String name, List<Argument> arguments, MethodHandle methodHandle)
+    {
+        this(schema, name, arguments, methodHandle, false);
+    }
+
+    public Procedure(String schema, String name, List<Argument> arguments, MethodHandle methodHandle, boolean requireNamedArguments)
     {
         this.schema = checkNotNullOrEmpty(schema, "schema").toLowerCase(ENGLISH);
         this.name = checkNotNullOrEmpty(name, "name").toLowerCase(ENGLISH);
         this.arguments = List.copyOf(requireNonNull(arguments, "arguments is null"));
         this.methodHandle = requireNonNull(methodHandle, "methodHandle is null");
+        this.requireNamedArguments = requireNamedArguments;
 
         Set<String> names = new HashSet<>();
         for (Argument argument : arguments) {
@@ -85,17 +91,20 @@ public class Procedure
         return methodHandle;
     }
 
+    public boolean requiresNamedArguments()
+    {
+        return requireNamedArguments;
+    }
+
     @Override
     public String toString()
     {
-        return new StringBuilder()
-                .append(schema).append('.').append(name)
-                .append('(')
-                .append(arguments.stream()
+        return schema + '.' + name +
+                '(' +
+                arguments.stream()
                         .map(Object::toString)
-                        .collect(joining(", ")))
-                .append(')')
-                .toString();
+                        .collect(joining(", ")) +
+                ')';
     }
 
     public static class Argument

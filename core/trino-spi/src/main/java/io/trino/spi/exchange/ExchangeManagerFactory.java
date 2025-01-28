@@ -19,7 +19,5 @@ public interface ExchangeManagerFactory
 {
     String getName();
 
-    ExchangeManager create(Map<String, String> config);
-
-    ExchangeManagerHandleResolver getHandleResolver();
+    ExchangeManager create(Map<String, String> config, ExchangeManagerContext context);
 }

@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.base.classloader;
 
+import com.google.inject.Inject;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitManager;
@@ -21,8 +22,7 @@ import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.DynamicFilter;
-
-import javax.inject.Inject;
+import io.trino.spi.function.table.ConnectorTableFunctionHandle;
 
 import static java.util.Objects.requireNonNull;
 
@@ -47,7 +47,7 @@ public final class ClassLoaderSafeConnectorSplitManager
             DynamicFilter dynamicFilter,
             Constraint constraint)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getSplits(transaction, session, table, dynamicFilter, constraint);
         }
     }
@@ -56,13 +56,10 @@ public final class ClassLoaderSafeConnectorSplitManager
     public ConnectorSplitSource getSplits(
             ConnectorTransactionHandle transaction,
             ConnectorSession session,
-            ConnectorTableHandle table,
-            SplitSchedulingStrategy splitSchedulingStrategy,
-            DynamicFilter dynamicFilter,
-            Constraint constraint)
+            ConnectorTableFunctionHandle function)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.getSplits(transaction, session, table, splitSchedulingStrategy, dynamicFilter, constraint);
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            return delegate.getSplits(transaction, session, function);
         }
     }
 }

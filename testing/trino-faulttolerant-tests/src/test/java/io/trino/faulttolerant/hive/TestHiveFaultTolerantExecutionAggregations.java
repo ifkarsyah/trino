@@ -18,14 +18,16 @@ import io.trino.plugin.exchange.filesystem.containers.MinioStorage;
 import io.trino.plugin.hive.HiveQueryRunner;
 import io.trino.testing.AbstractTestFaultTolerantExecutionAggregations;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.AfterClass;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.TestInstance;
 
 import java.util.Map;
 
 import static io.trino.plugin.exchange.filesystem.containers.MinioStorage.getExchangeManagerProperties;
-import static io.trino.testing.sql.TestTable.randomTableSuffix;
-import static io.trino.tpch.TpchTable.getTables;
+import static io.trino.testing.TestingNames.randomNameSuffix;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public class TestHiveFaultTolerantExecutionAggregations
         extends AbstractTestFaultTolerantExecutionAggregations
 {
@@ -35,7 +37,7 @@ public class TestHiveFaultTolerantExecutionAggregations
     protected QueryRunner createQueryRunner(Map<String, String> extraProperties)
             throws Exception
     {
-        this.minioStorage = new MinioStorage("test-exchange-spooling-" + randomTableSuffix());
+        this.minioStorage = new MinioStorage("test-exchange-spooling-" + randomNameSuffix());
         minioStorage.start();
 
         return HiveQueryRunner.builder()
@@ -44,11 +46,11 @@ public class TestHiveFaultTolerantExecutionAggregations
                     runner.installPlugin(new FileSystemExchangePlugin());
                     runner.loadExchangeManager("filesystem", getExchangeManagerProperties(minioStorage));
                 })
-                .setInitialTables(getTables())
+                .setInitialTables(REQUIRED_TPCH_TABLES)
                 .build();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void destroy()
             throws Exception
     {

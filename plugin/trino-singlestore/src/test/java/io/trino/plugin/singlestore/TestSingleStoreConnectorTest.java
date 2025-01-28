@@ -13,7 +13,6 @@
  */
 package io.trino.plugin.singlestore;
 
-import com.google.common.collect.ImmutableMap;
 import io.trino.plugin.jdbc.BaseJdbcConnectorTest;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.FilterNode;
@@ -23,26 +22,26 @@ import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.SqlExecutor;
 import io.trino.testing.sql.TestTable;
-import org.testng.SkipException;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.util.Optional;
 import java.util.OptionalInt;
 
 import static com.google.common.collect.Iterables.getOnlyElement;
-import static io.trino.plugin.singlestore.SingleStoreQueryRunner.createSingleStoreQueryRunner;
+import static io.trino.spi.connector.ConnectorMetadata.MODIFYING_ROWS_MESSAGE;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.MaterializedResult.resultBuilder;
-import static io.trino.testing.assertions.Assert.assertEquals;
 import static java.lang.String.format;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.IntStream.range;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
+import static org.junit.jupiter.api.Assumptions.abort;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public class TestSingleStoreConnectorTest
         extends BaseJdbcConnectorTest
 {
@@ -53,10 +52,12 @@ public class TestSingleStoreConnectorTest
             throws Exception
     {
         singleStoreServer = new TestingSingleStoreServer();
-        return createSingleStoreQueryRunner(singleStoreServer, ImmutableMap.of(), ImmutableMap.of(), REQUIRED_TPCH_TABLES);
+        return SingleStoreQueryRunner.builder(singleStoreServer)
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public final void destroy()
     {
         singleStoreServer.close();
@@ -65,39 +66,27 @@ public class TestSingleStoreConnectorTest
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_EQUALITY:
-            case SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_INEQUALITY:
-                return false;
-
-            case SUPPORTS_AGGREGATION_PUSHDOWN:
-                return false;
-
-            case SUPPORTS_JOIN_PUSHDOWN:
-                return true;
-
-            case SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN:
-            case SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM:
-                return false;
-
-            case SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT:
-            case SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT:
-            case SUPPORTS_COMMENT_ON_TABLE:
-            case SUPPORTS_COMMENT_ON_COLUMN:
-            case SUPPORTS_ADD_COLUMN_WITH_COMMENT:
-                return false;
-
-            case SUPPORTS_ARRAY:
-            case SUPPORTS_ROW_TYPE:
-                return false;
-
-            case SUPPORTS_RENAME_SCHEMA:
-            case SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS:
-                return false;
-
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+        return switch (connectorBehavior) {
+            case SUPPORTS_JOIN_PUSHDOWN -> true;
+            case SUPPORTS_ADD_COLUMN_WITH_COMMENT,
+                 SUPPORTS_AGGREGATION_PUSHDOWN,
+                 SUPPORTS_ARRAY,
+                 SUPPORTS_COMMENT_ON_COLUMN,
+                 SUPPORTS_COMMENT_ON_TABLE,
+                 SUPPORTS_DROP_NOT_NULL_CONSTRAINT,
+                 SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                 SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT,
+                 SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM,
+                 SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN,
+                 SUPPORTS_MAP_TYPE,
+                 SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_EQUALITY,
+                 SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_INEQUALITY,
+                 SUPPORTS_RENAME_SCHEMA,
+                 SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS,
+                 SUPPORTS_ROW_TYPE,
+                 SUPPORTS_SET_COLUMN_TYPE -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
     }
 
     @Override
@@ -127,55 +116,44 @@ public class TestSingleStoreConnectorTest
     {
         String typeName = dataMappingTestSetup.getTrinoTypeName();
 
-        if (typeName.equals("boolean")) {
+        return switch (typeName) {
             // SingleStore does not have built-in support for boolean type. SingleStore provides BOOLEAN as the synonym of TINYINT(1)
             // Querying the column with a boolean predicate subsequently fails with "Cannot apply operator: tinyint = boolean"
-            return Optional.empty();
-        }
-
-        if (typeName.equals("time")) {
+            case "boolean" -> Optional.empty();
             // SingleStore supports only second precision
             // Skip 'time' that is alias of time(3) here and add test cases in TestSingleStoreTypeMapping.testTime instead
-            return Optional.empty();
-        }
-
-        if (typeName.equals("timestamp(3) with time zone") ||
-                typeName.equals("timestamp(6) with time zone")) {
-            return Optional.of(dataMappingTestSetup.asUnsupported());
-        }
-
-        if (typeName.equals("timestamp")) {
+            case "time" -> Optional.empty();
+            case "timestamp(3) with time zone", "timestamp(6) with time zone" -> Optional.of(dataMappingTestSetup.asUnsupported());
             // TODO this should either work or fail cleanly
-            return Optional.empty();
-        }
-
-        if (typeName.equals("varchar")) {
+            case "timestamp" -> Optional.empty();
             // TODO fails due to case insensitive UTF-8 comparisons
-            return Optional.empty();
-        }
-
-        return Optional.of(dataMappingTestSetup);
+            case "varchar" -> Optional.empty();
+            default -> Optional.of(dataMappingTestSetup);
+        };
     }
 
+    @Test
     @Override
     public void testInsertUnicode()
     {
         // SingleStore's utf8 encoding is 3 bytes and truncates strings upon encountering a 4 byte sequence
-        throw new SkipException("SingleStore doesn't support utf8mb4");
+        abort("SingleStore doesn't support utf8mb4");
     }
 
+    @Test
     @Override
     public void testInsertHighestUnicodeCharacter()
     {
         // SingleStore's utf8 encoding is 3 bytes and truncates strings upon encountering a 4 byte sequence
-        throw new SkipException("SingleStore doesn't support utf8mb4");
+        abort("SingleStore doesn't support utf8mb4");
     }
 
+    @Test
     @Override
     public void testDeleteWithLike()
     {
         assertThatThrownBy(super::testDeleteWithLike)
-                .hasStackTraceContaining("TrinoException: Unsupported delete");
+                .hasStackTraceContaining("TrinoException: " + MODIFYING_ROWS_MESSAGE);
     }
 
     @Test
@@ -189,15 +167,15 @@ public class TestSingleStoreConnectorTest
     @Test
     public void testNameEscaping()
     {
-        assertFalse(getQueryRunner().tableExists(getSession(), "test_table"));
+        assertThat(getQueryRunner().tableExists(getSession(), "test_table")).isFalse();
 
         assertUpdate(getSession(), "CREATE TABLE test_table AS SELECT 123 x", 1);
-        assertTrue(getQueryRunner().tableExists(getSession(), "test_table"));
+        assertThat(getQueryRunner().tableExists(getSession(), "test_table")).isTrue();
 
         assertQuery(getSession(), "SELECT * FROM test_table", "SELECT 123");
 
         assertUpdate(getSession(), "DROP TABLE test_table");
-        assertFalse(getQueryRunner().tableExists(getSession(), "test_table"));
+        assertThat(getQueryRunner().tableExists(getSession(), "test_table")).isFalse();
     }
 
     @Test
@@ -205,22 +183,49 @@ public class TestSingleStoreConnectorTest
     {
         onRemoteDatabase().execute("CREATE TABLE tpch.mysql_test_tinyint1 (c_tinyint tinyint(1))");
 
-        MaterializedResult actual = computeActual("SHOW COLUMNS FROM mysql_test_tinyint1");
-        MaterializedResult expected = resultBuilder(getSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
-                .row("c_tinyint", "tinyint", "", "")
-                .build();
-
-        assertEquals(actual, expected);
+        assertThat(query("SHOW COLUMNS FROM mysql_test_tinyint1"))
+                .result().matches(resultBuilder(getSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
+                        .row("c_tinyint", "tinyint", "", "")
+                        .build());
 
         onRemoteDatabase().execute("INSERT INTO tpch.mysql_test_tinyint1 VALUES (127), (-128)");
         MaterializedResult materializedRows = computeActual("SELECT * FROM tpch.mysql_test_tinyint1 WHERE c_tinyint = 127");
-        assertEquals(materializedRows.getRowCount(), 1);
+        assertThat(materializedRows.getRowCount())
+                .isEqualTo(1);
         MaterializedRow row = getOnlyElement(materializedRows);
 
-        assertEquals(row.getFields().size(), 1);
-        assertEquals(row.getField(0), (byte) 127);
+        assertThat(row.getFields().size())
+                .isEqualTo(1);
+        assertThat(row.getField(0))
+                .isEqualTo((byte) 127);
 
         assertUpdate("DROP TABLE mysql_test_tinyint1");
+    }
+
+    // Overridden because the method from BaseConnectorTest fails on one of the assertions, see TODO below
+    @Test
+    @Override
+    public void testInsertIntoNotNullColumn()
+    {
+        try (TestTable table = newTrinoTable("insert_not_null", "(nullable_col INTEGER, not_null_col INTEGER NOT NULL)")) {
+            assertUpdate(format("INSERT INTO %s (not_null_col) VALUES (2)", table.getName()), 1);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES (NULL, 2)");
+            assertQueryFails(format("INSERT INTO %s (nullable_col) VALUES (1)", table.getName()), errorMessageForInsertIntoNotNullColumn("not_null_col"));
+            assertQueryFails(format("INSERT INTO %s (not_null_col, nullable_col) VALUES (NULL, 3)", table.getName()), "NULL value not allowed for NOT NULL column: not_null_col");
+            assertQueryFails(format("INSERT INTO %s (not_null_col, nullable_col) VALUES (TRY(5/0), 4)", table.getName()), "NULL value not allowed for NOT NULL column: not_null_col");
+            assertQueryFails(format("INSERT INTO %s (not_null_col) VALUES (TRY(6/0))", table.getName()), "NULL value not allowed for NOT NULL column: not_null_col");
+            assertQueryFails(format("INSERT INTO %s (nullable_col) SELECT nationkey FROM nation", table.getName()), errorMessageForInsertIntoNotNullColumn("not_null_col"));
+            // TODO (https://github.com/trinodb/trino/issues/13551) This doesn't fail for other connectors so
+            //  probably shouldn't fail for SingleStore either. Once fixed, remove test override.
+            assertQueryFails(format("INSERT INTO %s (nullable_col) SELECT nationkey FROM nation WHERE regionkey < 0", table.getName()), ".*Field 'not_null_col' doesn't have a default value.*");
+        }
+
+        try (TestTable table = newTrinoTable("commuted_not_null", "(nullable_col BIGINT, not_null_col BIGINT NOT NULL)")) {
+            assertUpdate(format("INSERT INTO %s (not_null_col) VALUES (2)", table.getName()), 1);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES (NULL, 2)");
+            // This is enforced by the engine and not the connector
+            assertQueryFails(format("INSERT INTO %s (not_null_col, nullable_col) VALUES (NULL, 3)", table.getName()), "NULL value not allowed for NOT NULL column: not_null_col");
+        }
     }
 
     @Override
@@ -241,6 +246,26 @@ public class TestSingleStoreConnectorTest
                 "VALUES ('col1', 'test comment'), ('col2', null), ('col3', null)");
 
         assertUpdate("DROP TABLE test_column_comment");
+    }
+
+    @Test
+    @Override
+    public void testAddNotNullColumn()
+    {
+        assertThatThrownBy(super::testAddNotNullColumn)
+                .isInstanceOf(AssertionError.class)
+                .hasMessage("Should fail to add not null column without a default value to a non-empty table");
+
+        try (TestTable table = newTrinoTable("test_add_nn_col", "(a_varchar varchar)")) {
+            String tableName = table.getName();
+
+            assertUpdate("INSERT INTO " + tableName + " VALUES ('a')", 1);
+            assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN b_varchar varchar NOT NULL");
+            assertThat(query("TABLE " + tableName))
+                    .skippingTypesCheck()
+                    // SingleStore adds implicit default value of '' for b_varchar
+                    .matches("VALUES ('a', '')");
+        }
     }
 
     @Test
@@ -287,6 +312,7 @@ public class TestSingleStoreConnectorTest
                 .isNotFullyPushedDown(AggregationNode.class);
     }
 
+    @Test
     @Override
     public void testCreateTableAsSelectNegativeDate()
     {
@@ -304,6 +330,7 @@ public class TestSingleStoreConnectorTest
                 .hasStackTraceContaining("TrinoException: Driver returned null LocalDate for a non-null value");
     }
 
+    @Test
     @Override
     public void testNativeQueryCreateStatement()
     {
@@ -311,12 +338,13 @@ public class TestSingleStoreConnectorTest
         // This is unusual, because other connectors don't produce a ResultSet metadata for CREATE TABLE at all.
         // The query fails because there are no columns, but even if columns were not required, the query would fail
         // to execute in SingleStore because the connector wraps it in additional syntax, which causes syntax error.
-        assertFalse(getQueryRunner().tableExists(getSession(), "numbers"));
-        assertThatThrownBy(() -> query("SELECT * FROM TABLE(system.query(query => 'CREATE TABLE numbers(n INTEGER)'))"))
-                .hasMessageContaining("descriptor has no fields");
-        assertFalse(getQueryRunner().tableExists(getSession(), "numbers"));
+        assertThat(getQueryRunner().tableExists(getSession(), "numbers")).isFalse();
+        assertThat(query("SELECT * FROM TABLE(system.query(query => 'CREATE TABLE numbers(n INTEGER)'))"))
+                .nonTrinoExceptionFailure().hasMessageContaining("descriptor has no fields");
+        assertThat(getQueryRunner().tableExists(getSession(), "numbers")).isFalse();
     }
 
+    @Test
     @Override
     public void testNativeQueryInsertStatementTableExists()
     {
@@ -325,8 +353,8 @@ public class TestSingleStoreConnectorTest
         // The query fails because there are no columns, but even if columns were not required, the query would fail
         // to execute in SingleStore because the connector wraps it in additional syntax, which causes syntax error.
         try (TestTable testTable = simpleTable()) {
-            assertThatThrownBy(() -> query(format("SELECT * FROM TABLE(system.query(query => 'INSERT INTO %s VALUES (3)'))", testTable.getName())))
-                    .hasMessageContaining("descriptor has no fields");
+            assertThat(query(format("SELECT * FROM TABLE(system.query(query => 'INSERT INTO %s VALUES (3)'))", testTable.getName())))
+                    .nonTrinoExceptionFailure().hasMessageContaining("descriptor has no fields");
             assertQuery("SELECT * FROM " + testTable.getName(), "VALUES 1, 2");
         }
     }
@@ -361,6 +389,19 @@ public class TestSingleStoreConnectorTest
     }
 
     @Override
+    protected OptionalInt maxSchemaNameLength()
+    {
+        return OptionalInt.of(62);
+    }
+
+    @Override
+    protected void verifySchemaNameLengthFailurePermissible(Throwable e)
+    {
+        // The error message says 60 char, but the actual limitation is 62
+        assertThat(e).hasMessageContaining("Distributed MemSQL requires the length of the database name to be at most 60 characters");
+    }
+
+    @Override
     protected OptionalInt maxTableNameLength()
     {
         return OptionalInt.of(64);
@@ -370,6 +411,18 @@ public class TestSingleStoreConnectorTest
     protected void verifyTableNameLengthFailurePermissible(Throwable e)
     {
         assertThat(e).hasMessageContaining("Incorrect table name");
+    }
+
+    @Override
+    protected OptionalInt maxColumnNameLength()
+    {
+        return OptionalInt.of(64);
+    }
+
+    @Override
+    protected void verifyColumnNameLengthFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessageMatching(".*Identifier name '.*' is too long");
     }
 
     @Override

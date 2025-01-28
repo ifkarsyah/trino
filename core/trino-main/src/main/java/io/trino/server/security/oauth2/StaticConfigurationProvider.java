@@ -13,11 +13,9 @@
  */
 package io.trino.server.security.oauth2;
 
-import javax.inject.Inject;
+import com.google.inject.Inject;
 
 import java.net.URI;
-
-import static java.util.Objects.requireNonNull;
 
 public class StaticConfigurationProvider
         implements OAuth2ServerConfigProvider
@@ -25,15 +23,15 @@ public class StaticConfigurationProvider
     private final OAuth2ServerConfig config;
 
     @Inject
-    StaticConfigurationProvider(StaticOAuth2ServerConfiguration config)
+    StaticConfigurationProvider(StaticOAuth2ServerConfig config)
     {
-        requireNonNull(config, "config is null");
         this.config = new OAuth2ServerConfig(
                 config.getAccessTokenIssuer(),
                 URI.create(config.getAuthUrl()),
                 URI.create(config.getTokenUrl()),
                 URI.create(config.getJwksUrl()),
-                config.getUserinfoUrl().map(URI::create));
+                config.getUserinfoUrl().map(URI::create),
+                config.getEndSessionUrl().map(URI::create));
     }
 
     @Override

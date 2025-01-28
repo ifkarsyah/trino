@@ -13,6 +13,8 @@
  */
 package io.trino.spi.expression;
 
+import io.trino.spi.type.ArrayType;
+
 public final class StandardFunctions
 {
     private StandardFunctions() {}
@@ -42,6 +44,7 @@ public final class StandardFunctions
      * $cast function result type is determined by the {@link Call#getType()}
      */
     public static final FunctionName CAST_FUNCTION_NAME = new FunctionName("$cast");
+    public static final FunctionName TRY_CAST_FUNCTION_NAME = new FunctionName("$try_cast");
 
     public static final FunctionName EQUAL_OPERATOR_FUNCTION_NAME = new FunctionName("$equal");
     public static final FunctionName NOT_EQUAL_OPERATOR_FUNCTION_NAME = new FunctionName("$not_equal");
@@ -49,7 +52,7 @@ public final class StandardFunctions
     public static final FunctionName LESS_THAN_OR_EQUAL_OPERATOR_FUNCTION_NAME = new FunctionName("$less_than_or_equal");
     public static final FunctionName GREATER_THAN_OPERATOR_FUNCTION_NAME = new FunctionName("$greater_than");
     public static final FunctionName GREATER_THAN_OR_EQUAL_OPERATOR_FUNCTION_NAME = new FunctionName("$greater_than_or_equal");
-    public static final FunctionName IS_DISTINCT_FROM_OPERATOR_FUNCTION_NAME = new FunctionName("$is_distinct_from");
+    public static final FunctionName IDENTICAL_OPERATOR_FUNCTION_NAME = new FunctionName("$identical");
 
     /**
      * Arithmetic addition.
@@ -81,5 +84,17 @@ public final class StandardFunctions
      */
     public static final FunctionName NEGATE_FUNCTION_NAME = new FunctionName("$negate");
 
-    public static final FunctionName LIKE_PATTERN_FUNCTION_NAME = new FunctionName("$like_pattern");
+    public static final FunctionName LIKE_FUNCTION_NAME = new FunctionName("$like");
+
+    /**
+     * {@code $in(value, array)} returns {@code true} when value is equal to an element of the array,
+     * otherwise returns {@code NULL} when comparing value to an element of the array returns an
+     * indeterminate result, otherwise returns {@code false}
+     */
+    public static final FunctionName IN_PREDICATE_FUNCTION_NAME = new FunctionName("$in");
+
+    /**
+     * $array creates instance of {@link ArrayType}
+     */
+    public static final FunctionName ARRAY_CONSTRUCTOR_FUNCTION_NAME = new FunctionName("$array");
 }

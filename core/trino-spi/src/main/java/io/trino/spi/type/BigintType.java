@@ -37,7 +37,7 @@ public final class BigintType
             return null;
         }
 
-        return block.getLong(position, 0);
+        return getLong(block, position);
     }
 
     @Override
@@ -57,6 +57,26 @@ public final class BigintType
     public Optional<Range> getRange()
     {
         return Optional.of(new Range(Long.MIN_VALUE, Long.MAX_VALUE));
+    }
+
+    @Override
+    public Optional<Object> getPreviousValue(Object object)
+    {
+        long value = (long) object;
+        if (value == Long.MIN_VALUE) {
+            return Optional.empty();
+        }
+        return Optional.of(value - 1);
+    }
+
+    @Override
+    public Optional<Object> getNextValue(Object object)
+    {
+        long value = (long) object;
+        if (value == Long.MAX_VALUE) {
+            return Optional.empty();
+        }
+        return Optional.of(value + 1);
     }
 
     @Override

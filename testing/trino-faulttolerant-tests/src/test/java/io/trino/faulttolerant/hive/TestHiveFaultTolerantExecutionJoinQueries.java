@@ -13,19 +13,24 @@
  */
 package io.trino.faulttolerant.hive;
 
+import io.trino.execution.DynamicFilterConfig;
 import io.trino.plugin.exchange.filesystem.FileSystemExchangePlugin;
 import io.trino.plugin.exchange.filesystem.containers.MinioStorage;
 import io.trino.plugin.hive.HiveQueryRunner;
 import io.trino.testing.AbstractTestFaultTolerantExecutionJoinQueries;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.AfterClass;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.util.Map;
 
+import static com.google.common.base.Verify.verify;
 import static io.trino.plugin.exchange.filesystem.containers.MinioStorage.getExchangeManagerProperties;
-import static io.trino.testing.sql.TestTable.randomTableSuffix;
-import static io.trino.tpch.TpchTable.getTables;
+import static io.trino.testing.TestingNames.randomNameSuffix;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public class TestHiveFaultTolerantExecutionJoinQueries
         extends AbstractTestFaultTolerantExecutionJoinQueries
 {
@@ -35,20 +40,30 @@ public class TestHiveFaultTolerantExecutionJoinQueries
     protected QueryRunner createQueryRunner(Map<String, String> extraProperties)
             throws Exception
     {
-        this.minioStorage = new MinioStorage("test-exchange-spooling-" + randomTableSuffix());
+        this.minioStorage = new MinioStorage("test-exchange-spooling-" + randomNameSuffix());
         minioStorage.start();
 
+        verify(new DynamicFilterConfig().isEnableDynamicFiltering(), "this class assumes dynamic filtering is enabled by default");
         return HiveQueryRunner.builder()
                 .setExtraProperties(extraProperties)
                 .setAdditionalSetup(runner -> {
                     runner.installPlugin(new FileSystemExchangePlugin());
                     runner.loadExchangeManager("filesystem", getExchangeManagerProperties(minioStorage));
                 })
-                .setInitialTables(getTables())
+                .addHiveProperty("hive.dynamic-filtering.wait-timeout", "1h")
+                .setInitialTables(REQUIRED_TPCH_TABLES)
                 .build();
     }
 
-    @AfterClass(alwaysRun = true)
+    @Test
+    public void verifyDynamicFilteringEnabled()
+    {
+        assertQuery(
+                "SHOW SESSION LIKE 'enable_dynamic_filtering'",
+                "VALUES ('enable_dynamic_filtering', 'true', 'true', 'boolean', 'Enable dynamic filtering')");
+    }
+
+    @AfterAll
     public void destroy()
             throws Exception
     {

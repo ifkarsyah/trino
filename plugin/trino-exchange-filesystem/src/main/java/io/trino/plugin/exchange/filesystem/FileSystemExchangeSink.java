@@ -17,17 +17,18 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.slice.SizeOf;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
 import io.airlift.slice.Slices;
+import io.trino.plugin.exchange.filesystem.MetricsBuilder.CounterMetricBuilder;
+import io.trino.plugin.exchange.filesystem.MetricsBuilder.DistributionMetricBuilder;
 import io.trino.spi.TrinoException;
 import io.trino.spi.exchange.ExchangeSink;
-import org.openjdk.jol.info.ClassLayout;
-
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.ThreadSafe;
-import javax.crypto.SecretKey;
+import io.trino.spi.exchange.ExchangeSinkInstanceHandle;
+import io.trino.spi.metrics.Metrics;
 
 import java.net.URI;
 import java.util.ArrayDeque;
@@ -51,6 +52,7 @@ import static io.airlift.concurrent.MoreFutures.addSuccessCallback;
 import static io.airlift.concurrent.MoreFutures.asVoid;
 import static io.airlift.concurrent.MoreFutures.toCompletableFuture;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.units.DataSize.succinctBytes;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.lang.Math.max;
@@ -67,14 +69,13 @@ public class FileSystemExchangeSink
     public static final String COMMITTED_MARKER_FILE_NAME = "committed";
     public static final String DATA_FILE_SUFFIX = ".data";
 
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(FileSystemExchangeSink.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(FileSystemExchangeSink.class);
 
     private final FileSystemExchangeStorage exchangeStorage;
     private final FileSystemExchangeStats stats;
     private final URI outputDirectory;
     private final int outputPartitionCount;
-    private final Optional<SecretKey> secretKey;
-    private final boolean preserveRecordsOrder;
+    private final boolean preserveOrderWithinPartition;
     private final int maxPageStorageSizeInBytes;
     private final long maxFileSizeInBytes;
     private final BufferPool bufferPool;
@@ -83,13 +84,16 @@ public class FileSystemExchangeSink
     private final AtomicReference<Throwable> failure = new AtomicReference<>();
     private volatile boolean closed;
 
+    private final MetricsBuilder metricsBuilder = new MetricsBuilder();
+    private final CounterMetricBuilder totalFilesMetric = metricsBuilder.getCounterMetric("FileSystemExchangeSource.filesTotal");
+    private final DistributionMetricBuilder fileSizeMetric = metricsBuilder.getDistributionMetric("FileSystemExchangeSource.fileSize");
+
     public FileSystemExchangeSink(
             FileSystemExchangeStorage exchangeStorage,
             FileSystemExchangeStats stats,
             URI outputDirectory,
             int outputPartitionCount,
-            Optional<SecretKey> secretKey,
-            boolean preserveRecordsOrder,
+            boolean preserveOrderWithinPartition,
             int maxPageStorageSizeInBytes,
             int exchangeSinkBufferPoolMinSize,
             int exchangeSinkBuffersPerPartition,
@@ -102,12 +106,24 @@ public class FileSystemExchangeSink
         this.stats = requireNonNull(stats, "stats is null");
         this.outputDirectory = requireNonNull(outputDirectory, "outputDirectory is null");
         this.outputPartitionCount = outputPartitionCount;
-        this.secretKey = requireNonNull(secretKey, "secretKey is null");
-        this.preserveRecordsOrder = preserveRecordsOrder;
+        this.preserveOrderWithinPartition = preserveOrderWithinPartition;
         this.maxPageStorageSizeInBytes = maxPageStorageSizeInBytes;
         this.maxFileSizeInBytes = maxFileSizeInBytes;
         // buffer pooling to overlap computation and I/O
         this.bufferPool = new BufferPool(stats, max(outputPartitionCount * exchangeSinkBuffersPerPartition, exchangeSinkBufferPoolMinSize), exchangeStorage.getWriteBufferSize());
+    }
+
+    @Override
+    public boolean isHandleUpdateRequired()
+    {
+        return false;
+    }
+
+    @Override
+    public void updateHandle(ExchangeSinkInstanceHandle handle)
+    {
+        // this implementation never requests an update
+        throw new UnsupportedOperationException();
     }
 
     // The future returned by {@link #isBlocked()} should only be considered as a best-effort hint.
@@ -141,13 +157,14 @@ public class FileSystemExchangeSink
                 exchangeStorage,
                 stats,
                 outputDirectory,
-                secretKey,
-                preserveRecordsOrder,
+                preserveOrderWithinPartition,
                 partitionId,
                 bufferPool,
                 failure,
                 maxPageStorageSizeInBytes,
-                maxFileSizeInBytes);
+                maxFileSizeInBytes,
+                totalFilesMetric,
+                fileSizeMetric);
     }
 
     @Override
@@ -170,7 +187,7 @@ public class FileSystemExchangeSink
         addSuccessCallback(finishFuture, this::destroy);
         finishFuture = Futures.transformAsync(
                 finishFuture,
-                ignored -> exchangeStorage.createEmptyFile(outputDirectory.resolve(COMMITTED_MARKER_FILE_NAME)),
+                _ -> exchangeStorage.createEmptyFile(outputDirectory.resolve(COMMITTED_MARKER_FILE_NAME)),
                 directExecutor());
         Futures.addCallback(finishFuture, new FutureCallback<>()
         {
@@ -204,8 +221,14 @@ public class FileSystemExchangeSink
 
         return stats.getExchangeSinkAbort().record(toCompletableFuture(Futures.transformAsync(
                 abortFuture,
-                ignored -> exchangeStorage.deleteRecursively(ImmutableList.of(outputDirectory)),
+                _ -> exchangeStorage.deleteRecursively(ImmutableList.of(outputDirectory)),
                 directExecutor())));
+    }
+
+    @Override
+    public Optional<Metrics> getMetrics()
+    {
+        return Optional.of(metricsBuilder.buildMetrics());
     }
 
     private void throwIfFailed()
@@ -226,18 +249,19 @@ public class FileSystemExchangeSink
     @ThreadSafe
     private static class BufferedStorageWriter
     {
-        private static final int INSTANCE_SIZE = ClassLayout.parseClass(BufferedStorageWriter.class).instanceSize();
+        private static final int INSTANCE_SIZE = instanceSize(BufferedStorageWriter.class);
 
         private final FileSystemExchangeStorage exchangeStorage;
         private final FileSystemExchangeStats stats;
         private final URI outputDirectory;
-        private final Optional<SecretKey> secretKey;
-        private final boolean preserveRecordsOrder;
+        private final boolean preserveOrderWithinPartition;
         private final int partitionId;
         private final BufferPool bufferPool;
         private final AtomicReference<Throwable> failure;
         private final int maxPageStorageSizeInBytes;
         private final long maxFileSizeInBytes;
+        private final CounterMetricBuilder totalFilesMetric;
+        private final DistributionMetricBuilder fileSizeMetric;
 
         @GuardedBy("this")
         private ExchangeStorageWriter currentWriter;
@@ -254,24 +278,26 @@ public class FileSystemExchangeSink
                 FileSystemExchangeStorage exchangeStorage,
                 FileSystemExchangeStats stats,
                 URI outputDirectory,
-                Optional<SecretKey> secretKey,
-                boolean preserveRecordsOrder,
+                boolean preserveOrderWithinPartition,
                 int partitionId,
                 BufferPool bufferPool,
                 AtomicReference<Throwable> failure,
                 int maxPageStorageSizeInBytes,
-                long maxFileSizeInBytes)
+                long maxFileSizeInBytes,
+                CounterMetricBuilder totalFilesMetric,
+                DistributionMetricBuilder fileSizeMetric)
         {
             this.exchangeStorage = requireNonNull(exchangeStorage, "exchangeStorage is null");
             this.stats = requireNonNull(stats, "stats is null");
             this.outputDirectory = requireNonNull(outputDirectory, "outputDirectory is null");
-            this.secretKey = requireNonNull(secretKey, "secretKey is null");
-            this.preserveRecordsOrder = preserveRecordsOrder;
+            this.preserveOrderWithinPartition = preserveOrderWithinPartition;
             this.partitionId = partitionId;
             this.bufferPool = requireNonNull(bufferPool, "bufferPool is null");
             this.failure = requireNonNull(failure, "failure is null");
             this.maxPageStorageSizeInBytes = maxPageStorageSizeInBytes;
             this.maxFileSizeInBytes = maxFileSizeInBytes;
+            this.totalFilesMetric = requireNonNull(totalFilesMetric, "totalFilesMetric is null");
+            this.fileSizeMetric = requireNonNull(fileSizeMetric, "fileSizeMetric is null");
 
             setupWriterForNextPart();
         }
@@ -287,15 +313,19 @@ public class FileSystemExchangeSink
                 throw new TrinoException(NOT_SUPPORTED, format("Max row size of %s exceeded: %s", succinctBytes(maxPageStorageSizeInBytes), succinctBytes(requiredPageStorageSize)));
             }
 
-            if (currentFileSize + requiredPageStorageSize > maxFileSizeInBytes && !preserveRecordsOrder) {
+            if (currentFileSize + requiredPageStorageSize > maxFileSizeInBytes && !preserveOrderWithinPartition) {
                 stats.getFileSizeInBytes().add(currentFileSize);
                 flushIfNeeded(true);
                 setupWriterForNextPart();
                 currentFileSize = 0;
                 currentBuffer = null;
+                fileSizeMetric.add(currentFileSize);
+                totalFilesMetric.increment();
             }
 
-            writeInternal(Slices.wrappedIntArray(data.length()));
+            Slice sizeSlice = Slices.allocate(Integer.BYTES);
+            sizeSlice.setInt(0, data.length());
+            writeInternal(sizeSlice);
             writeInternal(data);
 
             currentFileSize += requiredPageStorageSize;
@@ -337,7 +367,7 @@ public class FileSystemExchangeSink
         private void setupWriterForNextPart()
         {
             currentWriter = exchangeStorage.createExchangeStorageWriter(
-                    outputDirectory.resolve(partitionId + "_" + writers.size() + DATA_FILE_SUFFIX), secretKey);
+                    outputDirectory.resolve(partitionId + "_" + writers.size() + DATA_FILE_SUFFIX));
             writers.add(currentWriter);
         }
 
@@ -379,10 +409,11 @@ public class FileSystemExchangeSink
     @ThreadSafe
     private static class BufferPool
     {
-        private static final int INSTANCE_SIZE = ClassLayout.parseClass(BufferPool.class).instanceSize();
+        private static final int INSTANCE_SIZE = instanceSize(BufferPool.class);
 
         private final FileSystemExchangeStats stats;
-        private final int numBuffers;
+        private final int maxNumBuffers;
+        private final int writeBufferSize;
         private final long bufferRetainedSize;
         @GuardedBy("this")
         private final Queue<SliceOutput> freeBuffersQueue;
@@ -390,23 +421,25 @@ public class FileSystemExchangeSink
         private CompletableFuture<Void> blockedFuture = new CompletableFuture<>();
         @GuardedBy("this")
         private boolean closed;
+        @GuardedBy("this")
+        private int numBuffersCreated;
 
-        public BufferPool(FileSystemExchangeStats stats, int numBuffers, int writeBufferSize)
+        public BufferPool(FileSystemExchangeStats stats, int maxNumBuffers, int writeBufferSize)
         {
             this.stats = requireNonNull(stats, "stats is null");
-            checkArgument(numBuffers >= 1, "numBuffers must be at least one");
+            checkArgument(maxNumBuffers >= 1, "maxNumBuffers must be at least one");
 
-            this.numBuffers = numBuffers;
-            this.freeBuffersQueue = new ArrayDeque<>(numBuffers);
-            for (int i = 0; i < numBuffers; ++i) {
-                freeBuffersQueue.add(Slices.allocate(writeBufferSize).getOutput());
-            }
+            this.maxNumBuffers = maxNumBuffers;
+            this.writeBufferSize = writeBufferSize;
+            this.numBuffersCreated = 1;
+            this.freeBuffersQueue = new ArrayDeque<>(maxNumBuffers);
+            freeBuffersQueue.add(Slices.allocate(writeBufferSize).getOutput());
             this.bufferRetainedSize = freeBuffersQueue.peek().getRetainedSize();
         }
 
         public synchronized CompletableFuture<Void> isBlocked()
         {
-            if (freeBuffersQueue.isEmpty()) {
+            if (!hasFreeBuffers()) {
                 if (blockedFuture.isDone()) {
                     blockedFuture = new CompletableFuture<>();
                     stats.getExchangeSinkBlocked().record(blockedFuture);
@@ -422,7 +455,7 @@ public class FileSystemExchangeSink
                 if (closed) {
                     return null;
                 }
-                if (!freeBuffersQueue.isEmpty()) {
+                if (hasFreeBuffers()) {
                     return freeBuffersQueue.poll();
                 }
                 try {
@@ -457,7 +490,7 @@ public class FileSystemExchangeSink
             if (closed) {
                 return INSTANCE_SIZE;
             }
-            return INSTANCE_SIZE + numBuffers * bufferRetainedSize;
+            return INSTANCE_SIZE + numBuffersCreated * bufferRetainedSize;
         }
 
         public void close()
@@ -474,6 +507,20 @@ public class FileSystemExchangeSink
             }
 
             completableFuture.complete(null);
+        }
+
+        @GuardedBy("this")
+        private boolean hasFreeBuffers()
+        {
+            if (!freeBuffersQueue.isEmpty()) {
+                return true;
+            }
+            if (numBuffersCreated < maxNumBuffers) {
+                freeBuffersQueue.add(Slices.allocate(writeBufferSize).getOutput());
+                numBuffersCreated++;
+                return true;
+            }
+            return false;
         }
     }
 }

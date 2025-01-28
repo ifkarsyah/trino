@@ -15,7 +15,7 @@ package io.trino.plugin.hive;
 
 import io.trino.spi.Page;
 
-import java.util.Optional;
+import java.io.Closeable;
 
 public interface FileWriter
 {
@@ -25,14 +25,12 @@ public interface FileWriter
 
     void appendRows(Page dataPage);
 
-    void commit();
+    /**
+     * Commits written data. Returns rollback {@link Closeable} which can be used to cleanup on failure.
+     */
+    Closeable commit();
 
     void rollback();
 
     long getValidationCpuNanos();
-
-    default Optional<Runnable> getVerificationTask()
-    {
-        return Optional.empty();
-    }
 }

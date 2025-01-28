@@ -15,6 +15,7 @@ package io.trino.sql.planner;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.units.DataSize;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
@@ -23,14 +24,14 @@ import io.trino.sql.planner.plan.DynamicFilterId;
 import io.trino.sql.planner.plan.JoinNode;
 import io.trino.sql.planner.plan.PlanNode;
 
-import javax.annotation.concurrent.GuardedBy;
-
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
@@ -61,6 +62,7 @@ public class LocalDynamicFilterConsumer
     private volatile boolean collected;
 
     private final Queue<TupleDomain<DynamicFilterId>> summaryDomains = new ConcurrentLinkedQueue<>();
+    private final AtomicLong summaryDomainsRetainedSizeInBytes = new AtomicLong();
 
     public LocalDynamicFilterConsumer(Map<DynamicFilterId, Integer> buildChannels, Map<DynamicFilterId, Type> filterBuildTypes, List<Consumer<Map<DynamicFilterId, Domain>>> collectors, DataSize domainSizeLimit)
     {
@@ -70,7 +72,7 @@ public class LocalDynamicFilterConsumer
         requireNonNull(collectors, "collectors is null");
         checkArgument(!collectors.isEmpty(), "collectors is empty");
         this.collectors = ImmutableList.copyOf(collectors);
-        this.domainSizeLimitInBytes = requireNonNull(domainSizeLimit, "domainSizeLimit is null").toBytes();
+        this.domainSizeLimitInBytes = domainSizeLimit.toBytes();
     }
 
     @Override
@@ -80,20 +82,22 @@ public class LocalDynamicFilterConsumer
             return;
         }
 
+        long domainRetainedSizeInBytes = getRetainedSizeInBytes(domain);
+        summaryDomainsRetainedSizeInBytes.addAndGet(domainRetainedSizeInBytes);
         summaryDomains.add(domain);
         // Operators collecting dynamic filters tend to finish all at the same time
         // when filters are collected right before the HashBuilderOperator.
         // To avoid multiple task executor threads being blocked on waiting
         // for each other when collecting the filters run the heavy union operation
         // outside the lock.
-        unionSummaryDomains();
+        unionSummaryDomainsIfNecessary(false);
 
         TupleDomain<DynamicFilterId> result;
         synchronized (this) {
             verify(expectedPartitionCount == null || collectedPartitionCount < expectedPartitionCount);
 
             if (collected) {
-                summaryDomains.clear();
+                clearSummaryDomains();
                 return;
             }
             collectedPartitionCount++;
@@ -101,20 +105,21 @@ public class LocalDynamicFilterConsumer
             boolean allPartitionsCollected = expectedPartitionCount != null && collectedPartitionCount == expectedPartitionCount;
             if (allPartitionsCollected) {
                 // run final compaction as previous concurrent compactions may have left more than a single domain
-                unionSummaryDomains();
+                unionSummaryDomainsIfNecessary(true);
             }
 
             boolean sizeLimitExceeded = false;
             TupleDomain<DynamicFilterId> summary = summaryDomains.poll();
             // summary can be null as another concurrent summary compaction may be running
             if (summary != null) {
-                if (summary.getRetainedSizeInBytes(DynamicFilterId::getRetainedSizeInBytes) > domainSizeLimitInBytes) {
-                    summary = summary.simplify(1);
-                }
-                if (summary.getRetainedSizeInBytes(DynamicFilterId::getRetainedSizeInBytes) > domainSizeLimitInBytes) {
+                long summarySize = getRetainedSizeInBytes(summary);
+                if (summarySize > domainSizeLimitInBytes) {
+                    summaryDomainsRetainedSizeInBytes.addAndGet(-summarySize);
                     sizeLimitExceeded = true;
                 }
-                summaryDomains.add(summary);
+                else {
+                    summaryDomains.add(summary);
+                }
             }
 
             if (!allPartitionsCollected && !sizeLimitExceeded && !domain.isAll()) {
@@ -122,7 +127,7 @@ public class LocalDynamicFilterConsumer
             }
 
             if (sizeLimitExceeded || domain.isAll()) {
-                summaryDomains.clear();
+                clearSummaryDomains();
                 result = TupleDomain.all();
             }
             else {
@@ -130,6 +135,8 @@ public class LocalDynamicFilterConsumer
                 verify(summaryDomains.size() == 1);
                 result = summaryDomains.poll();
                 verify(result != null);
+                long currentSize = summaryDomainsRetainedSizeInBytes.addAndGet(-getRetainedSizeInBytes(result));
+                verify(currentSize == 0, "currentSize is expected to be zero: %s", currentSize);
             }
             collected = true;
         }
@@ -151,14 +158,16 @@ public class LocalDynamicFilterConsumer
                 return;
             }
             if (partitionCount == 0) {
-                result = TupleDomain.all();
+                result = TupleDomain.none();
             }
             else {
                 // run final compaction as previous concurrent compactions may have left more than a single domain
-                unionSummaryDomains();
+                unionSummaryDomainsIfNecessary(true);
                 verify(summaryDomains.size() == 1);
                 result = summaryDomains.poll();
                 verify(result != null);
+                long currentSize = summaryDomainsRetainedSizeInBytes.addAndGet(-getRetainedSizeInBytes(result));
+                verify(currentSize == 0, "currentSize is expected to be zero: %s", currentSize);
             }
             collected = true;
         }
@@ -166,22 +175,59 @@ public class LocalDynamicFilterConsumer
         collectors.forEach(collector -> collector.accept(convertTupleDomain(result)));
     }
 
-    private void unionSummaryDomains()
+    private void unionSummaryDomainsIfNecessary(boolean force)
     {
-        while (true) {
-            // This method is called every time a new domain is added to the summaryDomains queue.
-            // In a normal situation (when there's no race) there should be no more than 2 domains in the queue.
-            TupleDomain<DynamicFilterId> first = summaryDomains.poll();
-            if (first == null) {
-                return;
-            }
-            TupleDomain<DynamicFilterId> second = summaryDomains.poll();
-            if (second == null) {
-                summaryDomains.add(first);
-                return;
-            }
-            summaryDomains.add(columnWiseUnion(first, second));
+        if (summaryDomainsRetainedSizeInBytes.get() < domainSizeLimitInBytes && !force) {
+            return;
         }
+
+        List<TupleDomain<DynamicFilterId>> domains = new ArrayList<>();
+        long domainsRetainedSizeInBytes = 0;
+        while (true) {
+            TupleDomain<DynamicFilterId> domain = summaryDomains.poll();
+            if (domain == null) {
+                break;
+            }
+            domains.add(domain);
+            domainsRetainedSizeInBytes += getRetainedSizeInBytes(domain);
+        }
+
+        if (domains.isEmpty()) {
+            return;
+        }
+
+        TupleDomain<DynamicFilterId> union = columnWiseUnion(domains);
+        long unionSize = getRetainedSizeInBytes(union);
+        // Avoid large unions with domains that exceed size limit
+        if ((summaryDomainsRetainedSizeInBytes.get() - domainsRetainedSizeInBytes + unionSize) > domainSizeLimitInBytes) {
+            union = union.simplify(1);
+            unionSize = getRetainedSizeInBytes(union);
+        }
+        summaryDomainsRetainedSizeInBytes.addAndGet(unionSize - domainsRetainedSizeInBytes);
+        long currentSize = summaryDomainsRetainedSizeInBytes.get();
+        verify(currentSize >= 0, "currentSize is expected to be greater than or equal to zero: %s", currentSize);
+        summaryDomains.add(union);
+    }
+
+    @Override
+    public synchronized boolean isDomainCollectionComplete()
+    {
+        return collected;
+    }
+
+    private void clearSummaryDomains()
+    {
+        long domainsRetainedSizeInBytes = 0;
+        while (true) {
+            TupleDomain<DynamicFilterId> domain = summaryDomains.poll();
+            if (domain == null) {
+                break;
+            }
+            domainsRetainedSizeInBytes += getRetainedSizeInBytes(domain);
+        }
+        summaryDomainsRetainedSizeInBytes.addAndGet(-domainsRetainedSizeInBytes);
+        long currentSize = summaryDomainsRetainedSizeInBytes.get();
+        verify(currentSize >= 0, "currentSize is expected to be greater than or equal to zero: %s", currentSize);
     }
 
     private Map<DynamicFilterId, Domain> convertTupleDomain(TupleDomain<DynamicFilterId> result)
@@ -246,6 +292,12 @@ public class LocalDynamicFilterConsumer
                 .add("collectedPartitionCount", collectedPartitionCount)
                 .add("collected", collected)
                 .add("summaryDomains", summaryDomains)
+                .add("summaryDomainsRetainedSizeInBytes", summaryDomainsRetainedSizeInBytes)
                 .toString();
+    }
+
+    private static long getRetainedSizeInBytes(TupleDomain<DynamicFilterId> summary)
+    {
+        return summary.getRetainedSizeInBytes(DynamicFilterId::getRetainedSizeInBytes);
     }
 }

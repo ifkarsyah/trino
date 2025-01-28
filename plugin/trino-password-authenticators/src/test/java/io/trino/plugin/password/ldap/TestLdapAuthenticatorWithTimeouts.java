@@ -19,41 +19,44 @@ import io.trino.plugin.base.ldap.JdkLdapClient;
 import io.trino.plugin.base.ldap.LdapClientConfig;
 import io.trino.plugin.password.ldap.TestingOpenLdapServer.DisposableSubContext;
 import io.trino.spi.security.BasicPrincipal;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.ToxiproxyContainer;
 import org.testcontainers.containers.ToxiproxyContainer.ContainerProxy;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+
+import java.io.IOException;
 
 import static eu.rekawek.toxiproxy.model.ToxicDirection.DOWNSTREAM;
 import static io.trino.plugin.password.ldap.TestingOpenLdapServer.LDAP_PORT;
 import static java.lang.String.format;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public class TestLdapAuthenticatorWithTimeouts
 {
-    private final Closer closer = Closer.create();
+    private final Closer closer;
 
-    private TestingOpenLdapServer openLdapServer;
-    private String proxyLdapUrl;
+    private final TestingOpenLdapServer openLdapServer;
+    private final String proxyLdapUrl;
 
-    @BeforeClass
-    public void setup()
-            throws Exception
+    public TestLdapAuthenticatorWithTimeouts()
+            throws IOException
     {
+        closer = Closer.create();
         Network network = Network.newNetwork();
         closer.register(network::close);
 
-        ToxiproxyContainer proxyServer = new ToxiproxyContainer("shopify/toxiproxy:2.1.0")
+        ToxiproxyContainer proxyServer = new ToxiproxyContainer("ghcr.io/shopify/toxiproxy:2.4.0")
                 .withNetwork(network);
         closer.register(proxyServer::close);
         proxyServer.start();
 
-        openLdapServer = new TestingOpenLdapServer(network);
-        closer.register(openLdapServer);
+        openLdapServer = closer.register(new TestingOpenLdapServer(network));
         openLdapServer.start();
 
         ContainerProxy proxy = proxyServer.getProxy(openLdapServer.getNetworkAlias(), LDAP_PORT);
@@ -62,7 +65,7 @@ public class TestLdapAuthenticatorWithTimeouts
         proxyLdapUrl = format("ldap://%s:%s", proxy.getContainerIpAddress(), proxy.getProxyPort());
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void close()
             throws Exception
     {
@@ -90,10 +93,8 @@ public class TestLdapAuthenticatorWithTimeouts
                     .hasMessageMatching(".*Authentication error.*");
 
             LdapClientConfig withIncreasedTimeout = ldapConfig.setLdapConnectionTimeout(new Duration(30, SECONDS));
-            assertEquals(
-                    new LdapAuthenticator(new LdapAuthenticatorClient(new JdkLdapClient(withIncreasedTimeout)), ldapAuthenticatorConfig)
-                            .createAuthenticatedPrincipal("alice", "alice-pass"),
-                    new BasicPrincipal("alice"));
+            assertThat(new LdapAuthenticator(new LdapAuthenticatorClient(new JdkLdapClient(withIncreasedTimeout)), ldapAuthenticatorConfig)
+                    .createAuthenticatedPrincipal("alice", "alice-pass")).isEqualTo(new BasicPrincipal("alice"));
         }
     }
 
@@ -124,13 +125,11 @@ public class TestLdapAuthenticatorWithTimeouts
                     .hasMessageMatching(".*Authentication error.*");
 
             LdapClientConfig withIncreasedTimeout = ldapConfig.setLdapReadTimeout(new Duration(30, SECONDS));
-            assertEquals(
-                    new LdapAuthenticator(
-                            new LdapAuthenticatorClient(
-                                    new JdkLdapClient(withIncreasedTimeout)),
-                            ldapAuthenticatorConfig)
-                            .createAuthenticatedPrincipal("alice", "alice-pass"),
-                    new BasicPrincipal("alice"));
+            assertThat(new LdapAuthenticator(
+                    new LdapAuthenticatorClient(
+                            new JdkLdapClient(withIncreasedTimeout)),
+                    ldapAuthenticatorConfig)
+                    .createAuthenticatedPrincipal("alice", "alice-pass")).isEqualTo(new BasicPrincipal("alice"));
         }
     }
 }

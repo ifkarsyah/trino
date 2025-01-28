@@ -13,55 +13,25 @@
  */
 package io.trino.metadata;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
-import io.trino.connector.CatalogName;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 
-import java.util.Objects;
-
 import static java.util.Objects.requireNonNull;
 
-public final class TableHandle
+public record TableHandle(CatalogHandle catalogHandle, ConnectorTableHandle connectorHandle, ConnectorTransactionHandle transaction)
 {
-    private final CatalogName catalogName;
-    private final ConnectorTableHandle connectorHandle;
-    private final ConnectorTransactionHandle transaction;
-
-    @JsonCreator
-    public TableHandle(
-            @JsonProperty("catalogName") CatalogName catalogName,
-            @JsonProperty("connectorHandle") ConnectorTableHandle connectorHandle,
-            @JsonProperty("transaction") ConnectorTransactionHandle transaction)
+    public TableHandle
     {
-        this.catalogName = requireNonNull(catalogName, "catalogName is null");
-        this.connectorHandle = requireNonNull(connectorHandle, "connectorHandle is null");
-        this.transaction = requireNonNull(transaction, "transaction is null");
-    }
-
-    @JsonProperty
-    public CatalogName getCatalogName()
-    {
-        return catalogName;
-    }
-
-    @JsonProperty
-    public ConnectorTableHandle getConnectorHandle()
-    {
-        return connectorHandle;
-    }
-
-    @JsonProperty
-    public ConnectorTransactionHandle getTransaction()
-    {
-        return transaction;
+        requireNonNull(catalogHandle, "catalogHandle is null");
+        requireNonNull(connectorHandle, "connectorHandle is null");
+        requireNonNull(transaction, "transaction is null");
     }
 
     public TableHandle withConnectorHandle(ConnectorTableHandle connectorHandle)
     {
         return new TableHandle(
-                catalogName,
+                catalogHandle,
                 connectorHandle,
                 transaction);
     }
@@ -69,27 +39,6 @@ public final class TableHandle
     @Override
     public String toString()
     {
-        return catalogName + ":" + connectorHandle;
-    }
-
-    @Override
-    public boolean equals(Object o)
-    {
-        if (this == o) {
-            return true;
-        }
-        if (o == null || getClass() != o.getClass()) {
-            return false;
-        }
-        TableHandle other = (TableHandle) o;
-        return Objects.equals(catalogName, other.catalogName) &&
-                Objects.equals(connectorHandle, other.connectorHandle) &&
-                Objects.equals(transaction, other.transaction);
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return Objects.hash(catalogName, connectorHandle, transaction);
+        return catalogHandle + ":" + connectorHandle;
     }
 }

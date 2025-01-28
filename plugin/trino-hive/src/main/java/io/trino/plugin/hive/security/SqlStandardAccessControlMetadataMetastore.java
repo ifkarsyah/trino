@@ -13,9 +13,9 @@
  */
 package io.trino.plugin.hive.security;
 
-import io.trino.plugin.hive.metastore.HivePrincipal;
-import io.trino.plugin.hive.metastore.HivePrivilegeInfo;
-import io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege;
+import io.trino.metastore.HivePrincipal;
+import io.trino.metastore.HivePrivilegeInfo;
+import io.trino.metastore.HivePrivilegeInfo.HivePrivilege;
 import io.trino.spi.security.RoleGrant;
 
 import java.util.Optional;
@@ -39,7 +39,7 @@ public interface SqlStandardAccessControlMetadataMetastore
 
     void revokeRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, HivePrincipal grantor);
 
-    Set<RoleGrant> listGrantedPrincipals(String role);
+    Optional<HivePrincipal> getDatabaseOwner(String databaseName);
 
     void revokeTablePrivileges(String databaseName, String tableName, HivePrincipal grantee, HivePrincipal grantor, Set<HivePrivilege> privileges, boolean grantOption);
 

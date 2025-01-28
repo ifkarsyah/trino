@@ -13,13 +13,12 @@
  */
 package io.trino.metadata;
 
-import io.trino.connector.CatalogName;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.inject.Inject;
 import io.trino.connector.CatalogServiceProvider;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.procedure.Procedure;
-
-import javax.annotation.concurrent.ThreadSafe;
-import javax.inject.Inject;
 
 import static java.util.Objects.requireNonNull;
 
@@ -34,8 +33,8 @@ public class ProcedureRegistry
         this.proceduresProvider = requireNonNull(proceduresProvider, "proceduresProvider is null");
     }
 
-    public Procedure resolve(CatalogName catalogName, SchemaTableName name)
+    public Procedure resolve(CatalogHandle catalogHandle, SchemaTableName name)
     {
-        return proceduresProvider.getService(catalogName).getProcedure(name);
+        return proceduresProvider.getService(catalogHandle).getProcedure(name);
     }
 }

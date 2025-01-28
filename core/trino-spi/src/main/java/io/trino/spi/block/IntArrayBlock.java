@@ -13,27 +13,26 @@
  */
 package io.trino.spi.block;
 
-import io.airlift.slice.Slice;
-import io.airlift.slice.Slices;
-import org.openjdk.jol.info.ClassLayout;
-
-import javax.annotation.Nullable;
+import io.trino.spi.Experimental;
+import jakarta.annotation.Nullable;
 
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.function.ObjLongConsumer;
 
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.slice.SizeOf.sizeOf;
 import static io.trino.spi.block.BlockUtil.checkArrayRange;
+import static io.trino.spi.block.BlockUtil.checkReadablePosition;
 import static io.trino.spi.block.BlockUtil.checkValidRegion;
 import static io.trino.spi.block.BlockUtil.compactArray;
 import static io.trino.spi.block.BlockUtil.copyIsNullAndAppendNull;
 import static io.trino.spi.block.BlockUtil.ensureCapacity;
 
-public class IntArrayBlock
-        implements Block
+public final class IntArrayBlock
+        implements ValueBlock
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(IntArrayBlock.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(IntArrayBlock.class);
     public static final int SIZE_IN_BYTES_PER_POSITION = Integer.BYTES + Byte.BYTES;
 
     private final int arrayOffset;
@@ -116,7 +115,7 @@ public class IntArrayBlock
         if (valueIsNull != null) {
             consumer.accept(valueIsNull, sizeOf(valueIsNull));
         }
-        consumer.accept(this, (long) INSTANCE_SIZE);
+        consumer.accept(this, INSTANCE_SIZE);
     }
 
     @Override
@@ -125,13 +124,9 @@ public class IntArrayBlock
         return positionCount;
     }
 
-    @Override
-    public int getInt(int position, int offset)
+    public int getInt(int position)
     {
-        checkReadablePosition(position);
-        if (offset != 0) {
-            throw new IllegalArgumentException("offset must be zero");
-        }
+        checkReadablePosition(this, position);
         return values[position + arrayOffset];
     }
 
@@ -144,14 +139,14 @@ public class IntArrayBlock
     @Override
     public boolean isNull(int position)
     {
-        checkReadablePosition(position);
+        checkReadablePosition(this, position);
         return valueIsNull != null && valueIsNull[position + arrayOffset];
     }
 
     @Override
-    public Block getSingleValueBlock(int position)
+    public IntArrayBlock getSingleValueBlock(int position)
     {
-        checkReadablePosition(position);
+        checkReadablePosition(this, position);
         return new IntArrayBlock(
                 0,
                 1,
@@ -160,7 +155,7 @@ public class IntArrayBlock
     }
 
     @Override
-    public Block copyPositions(int[] positions, int offset, int length)
+    public IntArrayBlock copyPositions(int[] positions, int offset, int length)
     {
         checkArrayRange(positions, offset, length);
 
@@ -171,7 +166,7 @@ public class IntArrayBlock
         int[] newValues = new int[length];
         for (int i = 0; i < length; i++) {
             int position = positions[offset + i];
-            checkReadablePosition(position);
+            checkReadablePosition(this, position);
             if (valueIsNull != null) {
                 newValueIsNull[i] = valueIsNull[position + arrayOffset];
             }
@@ -181,7 +176,7 @@ public class IntArrayBlock
     }
 
     @Override
-    public Block getRegion(int positionOffset, int length)
+    public IntArrayBlock getRegion(int positionOffset, int length)
     {
         checkValidRegion(getPositionCount(), positionOffset, length);
 
@@ -189,7 +184,7 @@ public class IntArrayBlock
     }
 
     @Override
-    public Block copyRegion(int positionOffset, int length)
+    public IntArrayBlock copyRegion(int positionOffset, int length)
     {
         checkValidRegion(getPositionCount(), positionOffset, length);
 
@@ -210,7 +205,7 @@ public class IntArrayBlock
     }
 
     @Override
-    public Block copyWithAppendedNull()
+    public IntArrayBlock copyWithAppendedNull()
     {
         boolean[] newValueIsNull = copyIsNullAndAppendNull(valueIsNull, arrayOffset, positionCount);
         int[] newValues = ensureCapacity(values, arrayOffset + positionCount + 1);
@@ -219,23 +214,37 @@ public class IntArrayBlock
     }
 
     @Override
+    public IntArrayBlock getUnderlyingValueBlock()
+    {
+        return this;
+    }
+
+    @Override
     public String toString()
     {
-        StringBuilder sb = new StringBuilder("IntArrayBlock{");
-        sb.append("positionCount=").append(getPositionCount());
-        sb.append('}');
-        return sb.toString();
+        return "IntArrayBlock{positionCount=" + getPositionCount() + '}';
     }
 
-    Slice getValuesSlice()
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
     {
-        return Slices.wrappedIntArray(values, arrayOffset, positionCount);
+        return BlockUtil.getNulls(valueIsNull, arrayOffset, positionCount);
     }
 
-    private void checkReadablePosition(int position)
+    boolean[] getRawValueIsNull()
     {
-        if (position < 0 || position >= getPositionCount()) {
-            throw new IllegalArgumentException("position is not valid");
-        }
+        return valueIsNull;
+    }
+
+    @Experimental(eta = "2023-12-31")
+    public int[] getRawValues()
+    {
+        return values;
+    }
+
+    @Experimental(eta = "2023-12-31")
+    public int getRawValuesOffset()
+    {
+        return arrayOffset;
     }
 }

@@ -13,11 +13,12 @@
  */
 package io.trino.plugin.base.security;
 
+import io.trino.spi.connector.ColumnSchema;
 import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorSecurityContext;
 import io.trino.spi.connector.SchemaRoutineName;
 import io.trino.spi.connector.SchemaTableName;
-import io.trino.spi.function.FunctionKind;
+import io.trino.spi.function.SchemaFunctionName;
 import io.trino.spi.security.Privilege;
 import io.trino.spi.security.TrinoPrincipal;
 import io.trino.spi.security.ViewExpression;
@@ -50,9 +51,9 @@ public abstract class ForwardingConnectorAccessControl
     protected abstract ConnectorAccessControl delegate();
 
     @Override
-    public void checkCanCreateSchema(ConnectorSecurityContext context, String schemaName)
+    public void checkCanCreateSchema(ConnectorSecurityContext context, String schemaName, Map<String, Object> properties)
     {
-        delegate().checkCanCreateSchema(context, schemaName);
+        delegate().checkCanCreateSchema(context, schemaName, properties);
     }
 
     @Override
@@ -158,9 +159,9 @@ public abstract class ForwardingConnectorAccessControl
     }
 
     @Override
-    public Set<String> filterColumns(ConnectorSecurityContext context, SchemaTableName tableName, Set<String> columns)
+    public Map<SchemaTableName, Set<String>> filterColumns(ConnectorSecurityContext context, Map<SchemaTableName, Set<String>> tableColumns)
     {
-        return delegate().filterColumns(context, tableName, columns);
+        return delegate().filterColumns(context, tableColumns);
     }
 
     @Override
@@ -179,6 +180,12 @@ public abstract class ForwardingConnectorAccessControl
     public void checkCanRenameColumn(ConnectorSecurityContext context, SchemaTableName tableName)
     {
         delegate().checkCanRenameColumn(context, tableName);
+    }
+
+    @Override
+    public void checkCanAlterColumn(ConnectorSecurityContext context, SchemaTableName tableName)
+    {
+        delegate().checkCanAlterColumn(context, tableName);
     }
 
     @Override
@@ -358,12 +365,6 @@ public abstract class ForwardingConnectorAccessControl
     }
 
     @Override
-    public void checkCanShowRoleAuthorizationDescriptors(ConnectorSecurityContext context)
-    {
-        delegate().checkCanShowRoleAuthorizationDescriptors(context);
-    }
-
-    @Override
     public void checkCanShowRoles(ConnectorSecurityContext context)
     {
         delegate().checkCanShowRoles(context);
@@ -394,9 +395,45 @@ public abstract class ForwardingConnectorAccessControl
     }
 
     @Override
-    public void checkCanExecuteFunction(ConnectorSecurityContext context, FunctionKind functionKind, SchemaRoutineName function)
+    public boolean canExecuteFunction(ConnectorSecurityContext context, SchemaRoutineName function)
     {
-        delegate().checkCanExecuteFunction(context, functionKind, function);
+        return delegate().canExecuteFunction(context, function);
+    }
+
+    @Override
+    public boolean canCreateViewWithExecuteFunction(ConnectorSecurityContext context, SchemaRoutineName function)
+    {
+        return delegate().canCreateViewWithExecuteFunction(context, function);
+    }
+
+    @Override
+    public void checkCanShowFunctions(ConnectorSecurityContext context, String schemaName)
+    {
+        delegate().checkCanShowFunctions(context, schemaName);
+    }
+
+    @Override
+    public Set<SchemaFunctionName> filterFunctions(ConnectorSecurityContext context, Set<SchemaFunctionName> functionNames)
+    {
+        return delegate().filterFunctions(context, functionNames);
+    }
+
+    @Override
+    public void checkCanCreateFunction(ConnectorSecurityContext context, SchemaRoutineName function)
+    {
+        delegate().checkCanCreateFunction(context, function);
+    }
+
+    @Override
+    public void checkCanDropFunction(ConnectorSecurityContext context, SchemaRoutineName function)
+    {
+        delegate().checkCanDropFunction(context, function);
+    }
+
+    @Override
+    public void checkCanShowCreateFunction(ConnectorSecurityContext context, SchemaRoutineName function)
+    {
+        delegate().checkCanShowCreateFunction(context, function);
     }
 
     @Override
@@ -406,8 +443,14 @@ public abstract class ForwardingConnectorAccessControl
     }
 
     @Override
-    public List<ViewExpression> getColumnMasks(ConnectorSecurityContext context, SchemaTableName tableName, String columnName, Type type)
+    public Optional<ViewExpression> getColumnMask(ConnectorSecurityContext context, SchemaTableName tableName, String columnName, Type type)
     {
-        return delegate().getColumnMasks(context, tableName, columnName, type);
+        return delegate().getColumnMask(context, tableName, columnName, type);
+    }
+
+    @Override
+    public Map<ColumnSchema, ViewExpression> getColumnMasks(ConnectorSecurityContext context, SchemaTableName tableName, List<ColumnSchema> columns)
+    {
+        return delegate().getColumnMasks(context, tableName, columns);
     }
 }

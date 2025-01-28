@@ -15,25 +15,25 @@ package io.trino.spi.block;
 
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
-import org.openjdk.jol.info.ClassLayout;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.function.ObjLongConsumer;
 
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.slice.SizeOf.sizeOf;
 import static io.trino.spi.block.BlockUtil.checkArrayRange;
+import static io.trino.spi.block.BlockUtil.checkReadablePosition;
 import static io.trino.spi.block.BlockUtil.checkValidRegion;
 import static io.trino.spi.block.BlockUtil.compactArray;
 import static io.trino.spi.block.BlockUtil.copyIsNullAndAppendNull;
 import static io.trino.spi.block.BlockUtil.ensureCapacity;
 
-public class ByteArrayBlock
-        implements Block
+public final class ByteArrayBlock
+        implements ValueBlock
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(ByteArrayBlock.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(ByteArrayBlock.class);
     public static final int SIZE_IN_BYTES_PER_POSITION = Byte.BYTES + Byte.BYTES;
 
     private final int arrayOffset;
@@ -71,6 +71,22 @@ public class ByteArrayBlock
         this.valueIsNull = valueIsNull;
 
         retainedSizeInBytes = (INSTANCE_SIZE + sizeOf(valueIsNull) + sizeOf(values));
+    }
+
+    /**
+     * Gets the raw byte array that keeps the actual data values.
+     */
+    public byte[] getRawValues()
+    {
+        return values;
+    }
+
+    /**
+     * Gets the offset into raw byte array where the data values start.
+     */
+    public int getRawValuesOffset()
+    {
+        return arrayOffset;
     }
 
     @Override
@@ -116,7 +132,7 @@ public class ByteArrayBlock
         if (valueIsNull != null) {
             consumer.accept(valueIsNull, sizeOf(valueIsNull));
         }
-        consumer.accept(this, (long) INSTANCE_SIZE);
+        consumer.accept(this, INSTANCE_SIZE);
     }
 
     @Override
@@ -125,13 +141,9 @@ public class ByteArrayBlock
         return positionCount;
     }
 
-    @Override
-    public byte getByte(int position, int offset)
+    public byte getByte(int position)
     {
-        checkReadablePosition(position);
-        if (offset != 0) {
-            throw new IllegalArgumentException("offset must be zero");
-        }
+        checkReadablePosition(this, position);
         return values[position + arrayOffset];
     }
 
@@ -144,14 +156,14 @@ public class ByteArrayBlock
     @Override
     public boolean isNull(int position)
     {
-        checkReadablePosition(position);
+        checkReadablePosition(this, position);
         return valueIsNull != null && valueIsNull[position + arrayOffset];
     }
 
     @Override
-    public Block getSingleValueBlock(int position)
+    public ByteArrayBlock getSingleValueBlock(int position)
     {
-        checkReadablePosition(position);
+        checkReadablePosition(this, position);
         return new ByteArrayBlock(
                 0,
                 1,
@@ -160,7 +172,7 @@ public class ByteArrayBlock
     }
 
     @Override
-    public Block copyPositions(int[] positions, int offset, int length)
+    public ByteArrayBlock copyPositions(int[] positions, int offset, int length)
     {
         checkArrayRange(positions, offset, length);
 
@@ -171,7 +183,7 @@ public class ByteArrayBlock
         byte[] newValues = new byte[length];
         for (int i = 0; i < length; i++) {
             int position = positions[offset + i];
-            checkReadablePosition(position);
+            checkReadablePosition(this, position);
             if (valueIsNull != null) {
                 newValueIsNull[i] = valueIsNull[position + arrayOffset];
             }
@@ -181,7 +193,7 @@ public class ByteArrayBlock
     }
 
     @Override
-    public Block getRegion(int positionOffset, int length)
+    public ByteArrayBlock getRegion(int positionOffset, int length)
     {
         checkValidRegion(getPositionCount(), positionOffset, length);
 
@@ -189,7 +201,7 @@ public class ByteArrayBlock
     }
 
     @Override
-    public Block copyRegion(int positionOffset, int length)
+    public ByteArrayBlock copyRegion(int positionOffset, int length)
     {
         checkValidRegion(getPositionCount(), positionOffset, length);
 
@@ -210,7 +222,7 @@ public class ByteArrayBlock
     }
 
     @Override
-    public Block copyWithAppendedNull()
+    public ByteArrayBlock copyWithAppendedNull()
     {
         boolean[] newValueIsNull = copyIsNullAndAppendNull(valueIsNull, arrayOffset, positionCount);
         byte[] newValues = ensureCapacity(values, arrayOffset + positionCount + 1);
@@ -219,12 +231,21 @@ public class ByteArrayBlock
     }
 
     @Override
+    public ByteArrayBlock getUnderlyingValueBlock()
+    {
+        return this;
+    }
+
+    @Override
     public String toString()
     {
-        StringBuilder sb = new StringBuilder("ByteArrayBlock{");
-        sb.append("positionCount=").append(getPositionCount());
-        sb.append('}');
-        return sb.toString();
+        return "ByteArrayBlock{positionCount=" + getPositionCount() + '}';
+    }
+
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(valueIsNull, arrayOffset, positionCount);
     }
 
     Slice getValuesSlice()
@@ -232,10 +253,8 @@ public class ByteArrayBlock
         return Slices.wrappedBuffer(values, arrayOffset, positionCount);
     }
 
-    private void checkReadablePosition(int position)
+    boolean[] getRawValueIsNull()
     {
-        if (position < 0 || position >= getPositionCount()) {
-            throw new IllegalArgumentException("position is not valid");
-        }
+        return valueIsNull;
     }
 }

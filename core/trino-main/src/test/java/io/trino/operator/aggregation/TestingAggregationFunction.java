@@ -14,14 +14,14 @@
 package io.trino.operator.aggregation;
 
 import com.google.common.collect.ImmutableList;
-import io.trino.metadata.BoundSignature;
-import io.trino.metadata.FunctionNullability;
+import io.trino.operator.FlatHashStrategyCompiler;
+import io.trino.spi.function.AggregationImplementation;
+import io.trino.spi.function.BoundSignature;
+import io.trino.spi.function.FunctionNullability;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeOperators;
-import io.trino.sql.gen.JoinCompiler;
 import io.trino.sql.planner.plan.AggregationNode.Step;
-import io.trino.type.BlockTypeOperators;
 
 import java.util.List;
 import java.util.OptionalInt;
@@ -43,20 +43,19 @@ public class TestingAggregationFunction
     private final AccumulatorFactory factory;
     private final DistinctAccumulatorFactory distinctFactory;
 
-    public TestingAggregationFunction(BoundSignature signature, FunctionNullability functionNullability, AggregationMetadata aggregationMetadata)
+    public TestingAggregationFunction(BoundSignature signature, FunctionNullability functionNullability, AggregationImplementation aggregationImplementation)
     {
         this.parameterTypes = signature.getArgumentTypes();
-        List<Type> intermediateTypes = aggregationMetadata.getAccumulatorStateDescriptors().stream()
+        List<Type> intermediateTypes = aggregationImplementation.getAccumulatorStateDescriptors().stream()
                 .map(stateDescriptor -> stateDescriptor.getSerializer().getSerializedType())
                 .collect(toImmutableList());
         intermediateType = (intermediateTypes.size() == 1) ? getOnlyElement(intermediateTypes) : RowType.anonymous(intermediateTypes);
         this.finalType = signature.getReturnType();
-        this.factory = generateAccumulatorFactory(signature, aggregationMetadata, functionNullability);
+        this.factory = generateAccumulatorFactory(signature, aggregationImplementation, functionNullability, true);
         distinctFactory = new DistinctAccumulatorFactory(
                 factory,
                 parameterTypes,
-                new JoinCompiler(TYPE_OPERATORS),
-                new BlockTypeOperators(TYPE_OPERATORS),
+                new FlatHashStrategyCompiler(TYPE_OPERATORS),
                 TEST_SESSION);
     }
 
@@ -70,8 +69,7 @@ public class TestingAggregationFunction
         distinctFactory = new DistinctAccumulatorFactory(
                 factory,
                 parameterTypes,
-                new JoinCompiler(TYPE_OPERATORS),
-                new BlockTypeOperators(TYPE_OPERATORS),
+                new FlatHashStrategyCompiler(TYPE_OPERATORS),
                 TEST_SESSION);
     }
 

@@ -15,15 +15,12 @@ package io.trino.verifier;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableSet;
-import io.airlift.event.client.EventClient;
 import io.airlift.log.Logger;
 import io.airlift.units.Duration;
 import io.trino.spi.ErrorCode;
 import io.trino.spi.TrinoException;
+import jakarta.annotation.Nullable;
 
-import javax.annotation.Nullable;
-
-import java.io.Closeable;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.Files;
@@ -67,20 +64,61 @@ public class Verifier
             .add(PAGE_TRANSPORT_TIMEOUT.toErrorCode())
             .build();
 
-    private final VerifierConfig config;
-    private final Set<EventClient> eventClients;
+    private final String runId;
+    private final String source;
+    private final int suiteRepetitions;
+    private final int queryRepetitions;
+    private final String controlGateway;
+    private final String testGateway;
+    private final Duration controlTimeout;
+    private final Duration testTimeout;
+    private final int maxRowCount;
+    private final boolean isExplainOnly;
+    private final boolean checkDeterministic;
+    private final boolean isVerboseResultsComparison;
+    private final int controlTeardownRetries;
+    private final int testTeardownRetries;
+    private final boolean runTearDownOnResultMismatch;
+    private final boolean skipControl;
+    private final boolean isQuiet;
+    private final boolean checkCorrectness;
+    private final String skipCorrectnessRegex;
+    private final boolean simplifiedControlQueriesGenerationEnabled;
+    private final String simplifiedControlQueriesOutputDirectory;
+    private final Set<EventConsumer> eventConsumers;
     private final int threadCount;
     private final Set<String> allowedQueries;
     private final Set<String> bannedQueries;
     private final int precision;
 
-    public Verifier(PrintStream out, VerifierConfig config, Set<EventClient> eventClients)
+    public Verifier(PrintStream out, VerifierConfig config, Set<EventConsumer> eventConsumers)
     {
         requireNonNull(out, "out is null");
-        this.config = requireNonNull(config, "config is null");
-        this.eventClients = requireNonNull(eventClients, "eventClients is null");
+        requireNonNull(config, "config is null");
+        this.eventConsumers = requireNonNull(eventConsumers, "eventConsumers is null");
         this.allowedQueries = requireNonNull(config.getAllowedQueries(), "allowedQueries is null");
         this.bannedQueries = requireNonNull(config.getBannedQueries(), "bannedQueries is null");
+        this.runId = config.getRunId();
+        this.source = config.getSource();
+        this.suiteRepetitions = config.getSuiteRepetitions();
+        this.queryRepetitions = config.getQueryRepetitions();
+        this.controlGateway = config.getControlGateway();
+        this.testGateway = config.getTestGateway();
+        this.controlTimeout = config.getControlTimeout();
+        this.testTimeout = config.getTestTimeout();
+        this.maxRowCount = config.getMaxRowCount();
+        this.isExplainOnly = config.isExplainOnly();
+        this.checkDeterministic = config.isCheckDeterminismEnabled();
+        this.isVerboseResultsComparison = config.isVerboseResultsComparison();
+        this.controlTeardownRetries = config.getControlTeardownRetries();
+        this.testTeardownRetries = config.getTestTeardownRetries();
+        this.runTearDownOnResultMismatch = config.getRunTearDownOnResultMismatch();
+        this.skipControl = config.isSkipControl();
+        this.isQuiet = config.isQuiet();
+        this.checkCorrectness = config.isCheckCorrectnessEnabled();
+        this.skipCorrectnessRegex = config.getSkipCorrectnessRegex();
+        this.simplifiedControlQueriesGenerationEnabled = config.isSimplifiedControlQueriesGenerationEnabled();
+        this.simplifiedControlQueriesOutputDirectory = config.getSimplifiedControlQueriesOutputDirectory();
         this.threadCount = config.getThreadCount();
         this.precision = config.getDoublePrecision();
     }
@@ -92,15 +130,15 @@ public class Verifier
         ExecutorService executor = newFixedThreadPool(threadCount);
         CompletionService<Validator> completionService = new ExecutorCompletionService<>(executor);
 
-        int totalQueries = queries.size() * config.getSuiteRepetitions() * config.getQueryRepetitions();
+        int totalQueries = queries.size() * suiteRepetitions * queryRepetitions;
         log.info("Total Queries:     %d", totalQueries);
 
         log.info("Allowed Queries: %s", Joiner.on(',').join(allowedQueries));
 
         int queriesSubmitted = 0;
-        for (int i = 0; i < config.getSuiteRepetitions(); i++) {
+        for (int i = 0; i < suiteRepetitions; i++) {
             for (QueryPair query : queries) {
-                for (int j = 0; j < config.getQueryRepetitions(); j++) {
+                for (int j = 0; j < queryRepetitions; j++) {
                     // If we have allowed queries, only run the tests on those
                     if (!allowedQueries.isEmpty() && !allowedQueries.contains(query.getName())) {
                         log.debug("Query %s is not allowed", query.getName());
@@ -111,20 +149,20 @@ public class Verifier
                         continue;
                     }
                     Validator validator = new Validator(
-                            config.getControlGateway(),
-                            config.getTestGateway(),
-                            config.getControlTimeout(),
-                            config.getTestTimeout(),
-                            config.getMaxRowCount(),
-                            config.isExplainOnly(),
-                            config.getDoublePrecision(),
+                            controlGateway,
+                            testGateway,
+                            controlTimeout,
+                            testTimeout,
+                            maxRowCount,
+                            isExplainOnly,
+                            precision,
                             isCheckCorrectness(query),
-                            config.isCheckDeterminismEnabled(),
-                            config.isVerboseResultsComparison(),
-                            config.getControlTeardownRetries(),
-                            config.getTestTeardownRetries(),
-                            config.getRunTearDownOnResultMismatch(),
-                            config.isSkipControl(),
+                            checkDeterministic,
+                            isVerboseResultsComparison,
+                            controlTeardownRetries,
+                            testTeardownRetries,
+                            runTearDownOnResultMismatch,
+                            skipControl,
                             query);
                     completionService.submit(validator::valid, validator);
                     queriesSubmitted++;
@@ -150,7 +188,7 @@ public class Verifier
             Validator validator = takeUnchecked(completionService);
 
             if (validator.isSkipped()) {
-                if (!config.isQuiet()) {
+                if (!isQuiet) {
                     log.warn("%s", validator.getSkippedMessage());
                 }
 
@@ -159,12 +197,12 @@ public class Verifier
             }
 
             QueryResult controlResult = validator.getControlResult();
-            if (config.isSimplifiedControlQueriesGenerationEnabled() && controlResult.getState() == SUCCESS) {
+            if (simplifiedControlQueriesGenerationEnabled && controlResult.getState() == SUCCESS) {
                 QueryPair queryPair = validator.getQueryPair();
                 Path path = Paths.get(format(
                         "%s/%s/%s/%s.sql",
-                        config.getSimplifiedControlQueriesOutputDirectory(),
-                        config.getRunId(),
+                        simplifiedControlQueriesOutputDirectory,
+                        runId,
                         queryPair.getSuite(),
                         queryPair.getName()));
                 try {
@@ -184,12 +222,12 @@ public class Verifier
                 failed++;
             }
 
-            for (EventClient eventClient : eventClients) {
-                eventClient.post(buildEvent(validator));
+            VerifierQueryEvent queryEvent = buildEvent(validator);
+            for (EventConsumer eventConsumer : eventConsumers) {
+                eventConsumer.postEvent(queryEvent);
             }
-
             double progress = (((double) total) / totalQueries) * 100;
-            if (!config.isQuiet() || (progress - lastProgress) > 1) {
+            if (!isQuiet || (progress - lastProgress) > 1) {
                 log.info("Progress: %s valid, %s failed, %s skipped, %.2f%% done", valid, failed, skipped, progress);
                 lastProgress = progress;
             }
@@ -198,15 +236,13 @@ public class Verifier
         log.info("Results: %s / %s (%s skipped)", valid, failed, skipped);
         log.info("");
 
-        for (EventClient eventClient : eventClients) {
-            if (eventClient instanceof Closeable) {
-                try {
-                    ((Closeable) eventClient).close();
-                }
-                catch (IOException ignored) {
-                }
-                log.info("");
+        for (EventConsumer eventConsumer : eventConsumers) {
+            try {
+                eventConsumer.close();
             }
+            catch (IOException _) {
+            }
+            log.info("");
         }
 
         return failed;
@@ -215,14 +251,12 @@ public class Verifier
     private boolean isCheckCorrectness(QueryPair query)
     {
         // Check if either the control query or the test query matches the regex
-        if (Pattern.matches(config.getSkipCorrectnessRegex(), query.getTest().getQuery()) ||
-                Pattern.matches(config.getSkipCorrectnessRegex(), query.getControl().getQuery())) {
+        if (Pattern.matches(skipCorrectnessRegex, query.getTest().getQuery()) ||
+                Pattern.matches(skipCorrectnessRegex, query.getControl().getQuery())) {
             // If so disable correctness checking
             return false;
         }
-        else {
-            return config.isCheckCorrectnessEnabled();
-        }
+        return checkCorrectness;
     }
 
     private VerifierQueryEvent buildEvent(Validator validator)
@@ -245,8 +279,8 @@ public class Verifier
 
         return new VerifierQueryEvent(
                 queryPair.getSuite(),
-                config.getRunId(),
-                config.getSource(),
+                runId,
+                source,
                 queryPair.getName(),
                 !validator.valid(),
                 queryPair.getTest().getCatalog(),

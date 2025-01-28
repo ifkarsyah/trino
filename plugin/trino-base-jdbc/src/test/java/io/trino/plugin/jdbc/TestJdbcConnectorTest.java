@@ -20,25 +20,32 @@ import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.JdbcSqlExecutor;
 import io.trino.testing.sql.TestTable;
-import org.testng.SkipException;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Properties;
 
 import static io.trino.plugin.jdbc.H2QueryRunner.createH2QueryRunner;
 import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.UNSUPPORTED_TYPE_HANDLING;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.IGNORE;
+import static io.trino.spi.connector.ConnectorMetadata.MODIFYING_ROWS_MESSAGE;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.abort;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
 // Single-threaded because H2 DDL operations can sometimes take a global lock, leading to apparent deadlocks
 // like in https://github.com/trinodb/trino/issues/7209.
-@Test(singleThreaded = true)
+@TestInstance(PER_CLASS)
+@Execution(ExecutionMode.SAME_THREAD)
 public class TestJdbcConnectorTest
         extends BaseJdbcConnectorTest
 {
@@ -57,36 +64,28 @@ public class TestJdbcConnectorTest
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_LIMIT_PUSHDOWN:
-            case SUPPORTS_TOPN_PUSHDOWN:
-            case SUPPORTS_AGGREGATION_PUSHDOWN:
-                return false;
-
-            case SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS:
-                return false;
-
-            case SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT:
-            case SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT:
-            case SUPPORTS_COMMENT_ON_TABLE:
-            case SUPPORTS_COMMENT_ON_COLUMN:
-            case SUPPORTS_ADD_COLUMN_WITH_COMMENT:
-                return false;
-
-            case SUPPORTS_ARRAY:
-            case SUPPORTS_ROW_TYPE:
-                return false;
-
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+        return switch (connectorBehavior) {
+            case SUPPORTS_ADD_COLUMN_WITH_COMMENT,
+                 SUPPORTS_AGGREGATION_PUSHDOWN,
+                 SUPPORTS_ARRAY,
+                 SUPPORTS_COMMENT_ON_COLUMN,
+                 SUPPORTS_COMMENT_ON_TABLE,
+                 SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                 SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT,
+                 SUPPORTS_LIMIT_PUSHDOWN,
+                 SUPPORTS_MAP_TYPE,
+                 SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS,
+                 SUPPORTS_ROW_TYPE,
+                 SUPPORTS_TOPN_PUSHDOWN -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
     }
 
+    @Test
     @Override
-    @Test(dataProvider = "largeInValuesCount")
-    public void testLargeIn(int valuesCount)
+    public void testLargeIn()
     {
-        throw new SkipException("This test should pass with H2, but takes too long (currently over a mninute) and is not that important");
+        // This test should pass with H2, but takes too long (currently over a mninute) and is not that important
     }
 
     @Override
@@ -128,11 +127,12 @@ public class TestJdbcConnectorTest
         return Optional.of(dataMappingTestSetup);
     }
 
+    @Test
     @Override
     public void testDeleteWithLike()
     {
         assertThatThrownBy(super::testDeleteWithLike)
-                .hasStackTraceContaining("TrinoException: Unsupported delete");
+                .hasStackTraceContaining("TrinoException: " + MODIFYING_ROWS_MESSAGE);
     }
 
     @Test
@@ -251,6 +251,14 @@ public class TestJdbcConnectorTest
         }
     }
 
+    @Test
+    @Override
+    public void testNativeQueryColumnAlias()
+    {
+        assertThat(query(format("SELECT region_name FROM TABLE(system.query(query => 'SELECT name AS region_name FROM %s.region WHERE regionkey = 0'))", getSession().getSchema().orElseThrow())))
+                .matches("VALUES CAST('AFRICA' AS VARCHAR(25))");
+    }
+
     @Override
     protected String errorMessageForInsertIntoNotNullColumn(String columnName)
     {
@@ -258,10 +266,23 @@ public class TestJdbcConnectorTest
     }
 
     @Override
+    protected void verifyAddNotNullColumnToNonEmptyTableFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessageContaining("NULL not allowed for column");
+    }
+
+    @Test
+    @Override
     public void testAddColumnConcurrently()
     {
         // TODO: Difficult to determine whether the exception is concurrent issue or not from the error message
-        throw new SkipException("TODO: Enable this test after finding the failure cause");
+        abort("TODO: Enable this test after finding the failure cause");
+    }
+
+    @Override
+    protected void verifySetColumnTypeFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessageMatching("(?s).*(Data conversion error converting|value out of range).*");
     }
 
     @Override
@@ -275,5 +296,41 @@ public class TestJdbcConnectorTest
         return Session.builder(getSession())
                 .setCatalogSessionProperty("jdbc", UNSUPPORTED_TYPE_HANDLING, unsupportedTypeHandling.name())
                 .build();
+    }
+
+    @Override
+    protected void verifyColumnNameLengthFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessageMatching("(?s)(.*The name that starts with .* is too long\\..*)");
+    }
+
+    @Override
+    protected void verifySchemaNameLengthFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessageMatching("(?s)(.*The name that starts with .* is too long\\..*)");
+    }
+
+    @Override
+    protected void verifyTableNameLengthFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessageMatching("(?s)(.*The name that starts with .* is too long\\..*)");
+    }
+
+    @Override
+    protected OptionalInt maxColumnNameLength()
+    {
+        return OptionalInt.of(256);
+    }
+
+    @Override
+    protected OptionalInt maxSchemaNameLength()
+    {
+        return OptionalInt.of(256);
+    }
+
+    @Override
+    protected OptionalInt maxTableNameLength()
+    {
+        return OptionalInt.of(256);
     }
 }

@@ -13,51 +13,82 @@
  */
 package io.trino.plugin.iceberg.catalog.glue;
 
-import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.AmazonS3ClientBuilder;
-import com.amazonaws.services.s3.model.DeleteObjectsRequest;
-import com.amazonaws.services.s3.model.ListObjectsV2Request;
-import com.amazonaws.services.s3.model.ListObjectsV2Result;
-import com.amazonaws.services.s3.model.S3ObjectSummary;
+import com.amazonaws.services.glue.AWSGlueAsync;
+import com.amazonaws.services.glue.AWSGlueAsyncClientBuilder;
+import com.amazonaws.services.glue.model.DeleteTableRequest;
+import com.amazonaws.services.glue.model.EntityNotFoundException;
+import com.amazonaws.services.glue.model.GetTableRequest;
+import com.amazonaws.services.glue.model.Table;
+import com.amazonaws.services.glue.model.TableInput;
+import com.amazonaws.services.glue.model.UpdateTableRequest;
 import com.google.common.collect.ImmutableMap;
-import io.trino.plugin.hive.metastore.glue.GlueMetastoreApiStats;
+import com.google.common.collect.ImmutableSet;
+import io.trino.filesystem.Location;
+import io.trino.filesystem.TrinoFileSystem;
+import io.trino.filesystem.TrinoFileSystemFactory;
+import io.trino.filesystem.hdfs.HdfsFileSystemFactory;
+import io.trino.hdfs.DynamicHdfsConfiguration;
+import io.trino.hdfs.HdfsConfig;
+import io.trino.hdfs.HdfsConfiguration;
+import io.trino.hdfs.HdfsConfigurationInitializer;
+import io.trino.hdfs.HdfsEnvironment;
+import io.trino.hdfs.TrinoHdfsFileSystemStats;
+import io.trino.hdfs.authentication.NoHdfsAuthentication;
 import io.trino.plugin.iceberg.BaseIcebergConnectorSmokeTest;
 import io.trino.plugin.iceberg.IcebergQueryRunner;
 import io.trino.plugin.iceberg.SchemaInitializer;
 import io.trino.testing.QueryRunner;
-import io.trino.testing.sql.TestView;
+import io.trino.testing.sql.TestTable;
 import org.apache.iceberg.FileFormat;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Parameters;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectsRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
+import software.amazon.awssdk.services.s3.model.S3Object;
 
 import java.util.List;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.trino.plugin.hive.metastore.glue.AwsSdkUtil.getPaginatedResults;
-import static io.trino.testing.sql.TestTable.randomTableSuffix;
+import static io.trino.plugin.hive.metastore.glue.v1.GlueToTrinoConverter.getStorageDescriptor;
+import static io.trino.plugin.hive.metastore.glue.v1.GlueToTrinoConverter.getTableParameters;
+import static io.trino.plugin.hive.metastore.glue.v1.GlueToTrinoConverter.getTableType;
+import static io.trino.plugin.iceberg.IcebergTestUtils.checkParquetFileSorting;
+import static io.trino.testing.SystemEnvironmentUtils.requireEnv;
+import static io.trino.testing.TestingConnectorSession.SESSION;
+import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
-import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
 /*
  * TestIcebergGlueCatalogConnectorSmokeTest currently uses AWS Default Credential Provider Chain,
  * See https://docs.aws.amazon.com/sdk-for-java/v1/developer-guide/credentials.html#credentials-default
  * on ways to set your AWS credentials which will be needed to run this test.
  */
+@TestInstance(PER_CLASS)
 public class TestIcebergGlueCatalogConnectorSmokeTest
         extends BaseIcebergConnectorSmokeTest
 {
     private final String bucketName;
     private final String schemaName;
+    private final AWSGlueAsync glueClient;
+    private final TrinoFileSystemFactory fileSystemFactory;
 
-    @Parameters("s3.bucket")
-    public TestIcebergGlueCatalogConnectorSmokeTest(String bucketName)
+    public TestIcebergGlueCatalogConnectorSmokeTest()
     {
         super(FileFormat.PARQUET);
-        this.bucketName = requireNonNull(bucketName, "bucketName is null");
-        this.schemaName = "test_iceberg_smoke_" + randomTableSuffix();
+        this.bucketName = requireEnv("S3_BUCKET");
+        this.schemaName = "test_iceberg_smoke_" + randomNameSuffix();
+        glueClient = AWSGlueAsyncClientBuilder.defaultClient();
+
+        HdfsConfigurationInitializer initializer = new HdfsConfigurationInitializer(new HdfsConfig(), ImmutableSet.of());
+        HdfsConfiguration hdfsConfiguration = new DynamicHdfsConfiguration(initializer, ImmutableSet.of());
+        this.fileSystemFactory = new HdfsFileSystemFactory(new HdfsEnvironment(hdfsConfiguration, new HdfsConfig(), new NoHdfsAuthentication()), new TrinoHdfsFileSystemStats());
     }
 
     @Override
@@ -67,8 +98,12 @@ public class TestIcebergGlueCatalogConnectorSmokeTest
         return IcebergQueryRunner.builder()
                 .setIcebergProperties(
                         ImmutableMap.of(
+                                "iceberg.file-format", format.name(),
                                 "iceberg.catalog.type", "glue",
-                                "hive.metastore.glue.default-warehouse-dir", schemaPath()))
+                                "hive.metastore.glue.default-warehouse-dir", schemaPath(),
+                                "iceberg.register-table-procedure.enabled", "true",
+                                "iceberg.writer-sort-buffer-size", "1MB",
+                                "iceberg.allowed-extra-properties", "write.metadata.delete-after-commit.enabled,write.metadata.previous-versions-max"))
                 .setSchemaInitializer(
                         SchemaInitializer.builder()
                                 .withClonedTpchTables(REQUIRED_TPCH_TABLES)
@@ -77,7 +112,7 @@ public class TestIcebergGlueCatalogConnectorSmokeTest
                 .build();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void cleanup()
     {
         computeActual("SHOW TABLES").getMaterializedRows()
@@ -85,25 +120,7 @@ public class TestIcebergGlueCatalogConnectorSmokeTest
         getQueryRunner().execute("DROP SCHEMA IF EXISTS " + schemaName);
 
         // DROP TABLES should clean up any files, but clear the directory manually to be safe
-        AmazonS3 s3 = AmazonS3ClientBuilder.standard().build();
-
-        ListObjectsV2Request listObjectsRequest = new ListObjectsV2Request()
-                .withBucketName(bucketName)
-                .withPrefix(schemaPath());
-        List<DeleteObjectsRequest.KeyVersion> keysToDelete = getPaginatedResults(
-                s3::listObjectsV2,
-                listObjectsRequest,
-                ListObjectsV2Request::setContinuationToken,
-                ListObjectsV2Result::getNextContinuationToken,
-                new GlueMetastoreApiStats())
-                .map(ListObjectsV2Result::getObjectSummaries)
-                .flatMap(objectSummaries -> objectSummaries.stream().map(S3ObjectSummary::getKey))
-                .map(DeleteObjectsRequest.KeyVersion::new)
-                .collect(toImmutableList());
-
-        if (!keysToDelete.isEmpty()) {
-            s3.deleteObjects(new DeleteObjectsRequest(bucketName).withKeys(keysToDelete));
-        }
+        deleteDirectory(schemaPath());
     }
 
     @Test
@@ -111,17 +128,17 @@ public class TestIcebergGlueCatalogConnectorSmokeTest
     public void testShowCreateTable()
     {
         assertThat((String) computeScalar("SHOW CREATE TABLE region"))
-                .isEqualTo(format("" +
-                                "CREATE TABLE iceberg.%1$s.region (\n" +
+                .matches(format("" +
+                                "\\QCREATE TABLE iceberg.%1$s.region (\n" +
                                 "   regionkey bigint,\n" +
                                 "   name varchar,\n" +
                                 "   comment varchar\n" +
                                 ")\n" +
                                 "WITH (\n" +
-                                "   format = 'ORC',\n" +
+                                "   format = 'PARQUET',\n" +
                                 "   format_version = 2,\n" +
-                                "   location = '%2$s/%1$s.db/region'\n" +
-                                ")",
+                                "   location = '%2$s/%1$s.db/region-\\E.*\\Q'\n" +
+                                ")\\E",
                         schemaName,
                         schemaPath()));
     }
@@ -135,38 +152,124 @@ public class TestIcebergGlueCatalogConnectorSmokeTest
     }
 
     @Test
-    public void testCommentView()
+    void testGlueTableLocation()
     {
-        // TODO: Consider moving to BaseConnectorSmokeTest
-        try (TestView view = new TestView(getQueryRunner()::execute, "test_comment_view", "SELECT * FROM region")) {
-            // comment set
-            assertUpdate("COMMENT ON VIEW " + view.getName() + " IS 'new comment'");
-            assertThat((String) computeScalar("SHOW CREATE VIEW " + view.getName())).contains("COMMENT 'new comment'");
-            assertThat(getTableComment(view.getName())).isEqualTo("new comment");
+        try (TestTable table = newTrinoTable("test_table_location", "AS SELECT 1 x")) {
+            String initialLocation = getStorageDescriptor(getGlueTable(table.getName())).orElseThrow().getLocation();
+            assertThat(getStorageDescriptor(getGlueTable(table.getName())).orElseThrow().getLocation())
+                    // Using startsWith because the location has UUID suffix
+                    .startsWith("%s/%s.db/%s".formatted(schemaPath(), schemaName, table.getName()));
 
-            // comment updated
-            assertUpdate("COMMENT ON VIEW " + view.getName() + " IS 'updated comment'");
-            assertThat(getTableComment(view.getName())).isEqualTo("updated comment");
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 2", 1);
+            Table glueTable = getGlueTable(table.getName());
+            assertThat(getStorageDescriptor(glueTable).orElseThrow().getLocation())
+                    .isEqualTo(initialLocation);
 
-            // comment set to empty
-            assertUpdate("COMMENT ON VIEW " + view.getName() + " IS ''");
-            assertThat(getTableComment(view.getName())).isEmpty();
+            String newTableLocation = initialLocation + "_new";
+            updateTableLocation(glueTable, newTableLocation);
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 3", 1);
+            assertThat(getStorageDescriptor(getGlueTable(table.getName())).orElseThrow().getLocation())
+                    .isEqualTo(newTableLocation);
 
-            // comment deleted
-            assertUpdate("COMMENT ON VIEW " + view.getName() + " IS 'a comment'");
-            assertThat(getTableComment(view.getName())).isEqualTo("a comment");
-            assertUpdate("COMMENT ON VIEW " + view.getName() + " IS NULL");
-            assertThat(getTableComment(view.getName())).isNull();
+            assertUpdate("CALL system.unregister_table(CURRENT_SCHEMA, '" + table.getName() + "')");
+            assertUpdate("CALL system.register_table(CURRENT_SCHEMA, '" + table.getName() + "', '" + initialLocation + "')");
+            assertThat(getStorageDescriptor(getGlueTable(table.getName())).orElseThrow().getLocation())
+                    .isEqualTo(initialLocation);
         }
     }
 
-    private String getTableComment(String tableName)
+    private Table getGlueTable(String tableName)
     {
-        return (String) computeScalar("SELECT comment FROM system.metadata.table_comments WHERE catalog_name = 'iceberg' AND schema_name = '" + schemaName + "' AND table_name = '" + tableName + "'");
+        GetTableRequest request = new GetTableRequest().withDatabaseName(schemaName).withName(tableName);
+        return glueClient.getTable(request).getTable();
     }
 
-    private String schemaPath()
+    private void updateTableLocation(Table table, String newLocation)
+    {
+        TableInput tableInput = new TableInput()
+                .withName(table.getName())
+                .withTableType(getTableType(table))
+                .withStorageDescriptor(getStorageDescriptor(table).orElseThrow().withLocation(newLocation))
+                .withParameters(getTableParameters(table));
+        UpdateTableRequest updateTableRequest = new UpdateTableRequest()
+                .withDatabaseName(schemaName)
+                .withTableInput(tableInput);
+        glueClient.updateTable(updateTableRequest);
+    }
+
+    @Override
+    protected void dropTableFromMetastore(String tableName)
+    {
+        DeleteTableRequest deleteTableRequest = new DeleteTableRequest()
+                .withDatabaseName(schemaName)
+                .withName(tableName);
+        glueClient.deleteTable(deleteTableRequest);
+        GetTableRequest getTableRequest = new GetTableRequest()
+                .withDatabaseName(schemaName)
+                .withName(tableName);
+        assertThatThrownBy(() -> glueClient.getTable(getTableRequest))
+                .isInstanceOf(EntityNotFoundException.class);
+    }
+
+    @Override
+    protected String getMetadataLocation(String tableName)
+    {
+        GetTableRequest getTableRequest = new GetTableRequest()
+                .withDatabaseName(schemaName)
+                .withName(tableName);
+        return getTableParameters(glueClient.getTable(getTableRequest).getTable())
+                .get("metadata_location");
+    }
+
+    @Override
+    protected void deleteDirectory(String location)
+    {
+        try (S3Client s3 = S3Client.create()) {
+            ListObjectsV2Request listObjectsRequest = ListObjectsV2Request.builder()
+                    .bucket(bucketName)
+                    .prefix(location)
+                    .build();
+            s3.listObjectsV2Paginator(listObjectsRequest).stream()
+                    .forEach(listObjectsResponse -> {
+                        List<String> keys = listObjectsResponse.contents().stream().map(S3Object::key).collect(toImmutableList());
+                        if (!keys.isEmpty()) {
+                            DeleteObjectsRequest deleteObjectsRequest = DeleteObjectsRequest.builder()
+                                    .bucket(bucketName)
+                                    .delete(builder -> builder.objects(keys.stream()
+                                            .map(key -> ObjectIdentifier.builder().key(key).build())
+                                            .toList()).quiet(true))
+                                    .build();
+                            s3.deleteObjects(deleteObjectsRequest);
+                        }
+                    });
+
+            assertThat(s3.listObjects(ListObjectsRequest.builder().bucket(bucketName).prefix(location).build()).contents()).isEmpty();
+        }
+    }
+
+    @Override
+    protected boolean isFileSorted(Location path, String sortColumnName)
+    {
+        TrinoFileSystem fileSystem = fileSystemFactory.create(SESSION);
+        return checkParquetFileSorting(fileSystem.newInputFile(path), sortColumnName);
+    }
+
+    @Override
+    protected String schemaPath()
     {
         return format("s3://%s/%s", bucketName, schemaName);
+    }
+
+    @Override
+    protected boolean locationExists(String location)
+    {
+        try (S3Client s3 = S3Client.create()) {
+            ListObjectsV2Request request = ListObjectsV2Request.builder()
+                    .bucket(bucketName)
+                    .prefix(location)
+                    .maxKeys(1)
+                    .build();
+            return !s3.listObjectsV2(request).contents().isEmpty();
+        }
     }
 }

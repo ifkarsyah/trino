@@ -16,18 +16,21 @@ package io.trino.testing;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.trino.spi.HostAddress;
 import io.trino.spi.connector.ConnectorSplit;
-import org.openjdk.jol.info.ClassLayout;
 
 import java.util.List;
+import java.util.Map;
 
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
+import static io.airlift.slice.SizeOf.instanceSize;
+import static java.util.stream.Collectors.joining;
 
 public class TestingSplit
         implements ConnectorSplit
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(TestingSplit.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(TestingSplit.class);
 
     private static final HostAddress localHost = HostAddress.fromString("127.0.0.1");
 
@@ -71,9 +74,12 @@ public class TestingSplit
     }
 
     @Override
-    public Object getInfo()
+    public Map<String, String> getSplitInfo()
     {
-        return this;
+        return ImmutableMap.<String, String>builder()
+                .put("remotelyAccessible", String.valueOf(remotelyAccessible))
+                .put("addresses", addresses.stream().map(HostAddress::toString).collect(joining(",")))
+                .buildOrThrow();
     }
 
     @Override

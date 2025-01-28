@@ -19,10 +19,13 @@ import io.trino.tests.product.launcher.env.Environment;
 import io.trino.tests.product.launcher.env.EnvironmentProvider;
 import io.trino.tests.product.launcher.env.common.Standard;
 
+import java.io.File;
+
+import static io.trino.testing.SystemEnvironmentUtils.requireEnv;
 import static io.trino.tests.product.launcher.env.EnvironmentContainers.COORDINATOR;
 import static io.trino.tests.product.launcher.env.EnvironmentContainers.TESTS;
 import static io.trino.tests.product.launcher.env.EnvironmentContainers.configureTempto;
-import static io.trino.tests.product.launcher.env.common.Standard.CONTAINER_PRESTO_ETC;
+import static io.trino.tests.product.launcher.env.common.Standard.CONTAINER_TRINO_ETC;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static org.testcontainers.utility.MountableFile.forHostPath;
@@ -33,9 +36,9 @@ import static org.testcontainers.utility.MountableFile.forHostPath;
 public abstract class AbstractSinglenodeDeltaLakeDatabricks
         extends EnvironmentProvider
 {
-    private final DockerFiles dockerFiles;
+    private static final File DATABRICKS_JDBC_PROVIDER = new File("testing/trino-product-tests-launcher/target/databricks-jdbc.jar");
 
-    abstract String databricksTestJdbcUrl();
+    private final DockerFiles dockerFiles;
 
     public AbstractSinglenodeDeltaLakeDatabricks(Standard standard, DockerFiles dockerFiles)
     {
@@ -43,14 +46,16 @@ public abstract class AbstractSinglenodeDeltaLakeDatabricks
         this.dockerFiles = requireNonNull(dockerFiles, "dockerFiles is null");
     }
 
+    abstract String databricksTestJdbcUrl();
+
     @Override
     public void extendEnvironment(Environment.Builder builder)
     {
         String databricksTestJdbcUrl = databricksTestJdbcUrl();
-        String databricksTestLogin = requireNonNull(System.getenv("DATABRICKS_LOGIN"), "Environment DATABRICKS_LOGIN was not set");
-        String databricksTestToken = requireNonNull(System.getenv("DATABRICKS_TOKEN"), "Environment DATABRICKS_TOKEN was not set");
-        String awsRegion = requireNonNull(System.getenv("AWS_REGION"), "Environment AWS_REGION was not set");
-        String s3Bucket = requireNonNull(System.getenv("S3_BUCKET"), "Environment S3_BUCKET was not set");
+        String databricksTestLogin = requireEnv("DATABRICKS_LOGIN");
+        String databricksTestToken = requireEnv("DATABRICKS_TOKEN");
+        String awsRegion = requireEnv("AWS_REGION");
+        String s3Bucket = requireEnv("S3_BUCKET");
         DockerFiles.ResourceProvider configDir = dockerFiles.getDockerFilesHostDirectory("conf/environment/singlenode-delta-lake-databricks");
 
         builder.configureContainer(COORDINATOR, dockerContainer -> exportAWSCredentials(dockerContainer)
@@ -60,25 +65,28 @@ public abstract class AbstractSinglenodeDeltaLakeDatabricks
                 .withEnv("DATABRICKS_TOKEN", databricksTestToken));
         builder.addConnector("hive", forHostPath(configDir.getPath("hive.properties")));
         builder.addConnector(
-                "delta-lake",
+                "delta_lake",
                 forHostPath(configDir.getPath("delta.properties")),
-                CONTAINER_PRESTO_ETC + "/catalog/delta.properties");
+                CONTAINER_TRINO_ETC + "/catalog/delta.properties");
 
         builder.configureContainer(TESTS, container -> exportAWSCredentials(container)
                 .withEnv("S3_BUCKET", s3Bucket)
                 .withEnv("AWS_REGION", awsRegion)
                 .withEnv("DATABRICKS_JDBC_URL", databricksTestJdbcUrl)
                 .withEnv("DATABRICKS_LOGIN", databricksTestLogin)
-                .withEnv("DATABRICKS_TOKEN", databricksTestToken));
+                .withEnv("DATABRICKS_TOKEN", databricksTestToken)
+                .withCopyFileToContainer(
+                        forHostPath(DATABRICKS_JDBC_PROVIDER.getAbsolutePath()),
+                        "/docker/jdbc/databricks-jdbc.jar"));
 
         configureTempto(builder, configDir);
     }
 
     private DockerContainer exportAWSCredentials(DockerContainer container)
     {
-        container = exportAWSCredential(container, "DATABRICKS_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID", true);
-        container = exportAWSCredential(container, "DATABRICKS_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY", true);
-        return exportAWSCredential(container, "DATABRICKS_AWS_SESSION_TOKEN", "AWS_SESSION_TOKEN", false);
+        container = exportAWSCredential(container, "TRINO_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID", true);
+        container = exportAWSCredential(container, "TRINO_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY", true);
+        return exportAWSCredential(container, "TRINO_AWS_SESSION_TOKEN", "AWS_SESSION_TOKEN", false);
     }
 
     private DockerContainer exportAWSCredential(DockerContainer container, String credentialEnvVariable, String containerEnvVariable, boolean required)

@@ -14,19 +14,18 @@
 package io.trino.execution;
 
 import com.google.common.util.concurrent.ListenableFuture;
-import io.trino.connector.CatalogName;
+import com.google.inject.Inject;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.SessionPropertyManager;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.sql.tree.Expression;
 import io.trino.sql.tree.ResetSession;
-
-import javax.inject.Inject;
 
 import java.util.List;
 
 import static com.google.common.util.concurrent.Futures.immediateVoidFuture;
-import static io.trino.spi.StandardErrorCode.CATALOG_NOT_FOUND;
+import static io.trino.metadata.MetadataUtil.getRequiredCatalogHandle;
 import static io.trino.spi.StandardErrorCode.INVALID_SESSION_PROPERTY;
 import static io.trino.sql.analyzer.SemanticExceptions.semanticException;
 import static java.util.Objects.requireNonNull;
@@ -69,9 +68,8 @@ public class ResetSessionTask
             }
         }
         else {
-            CatalogName catalogName = metadata.getCatalogHandle(stateMachine.getSession(), parts.get(0))
-                    .orElseThrow(() -> semanticException(CATALOG_NOT_FOUND, statement, "Catalog '%s' does not exist", parts.get(0)));
-            if (sessionPropertyManager.getConnectorSessionPropertyMetadata(catalogName, parts.get(1)).isEmpty()) {
+            CatalogHandle catalogHandle = getRequiredCatalogHandle(metadata, stateMachine.getSession(), statement, parts.get(0));
+            if (sessionPropertyManager.getConnectorSessionPropertyMetadata(catalogHandle, parts.get(1)).isEmpty()) {
                 throw semanticException(INVALID_SESSION_PROPERTY, statement, "Session property '%s' does not exist", statement.getName());
             }
         }

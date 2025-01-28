@@ -13,9 +13,12 @@
  */
 package io.trino.testing;
 
-import io.trino.connector.CatalogName;
+import io.airlift.tracing.Tracing;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.trace.Tracer;
 import io.trino.connector.ConnectorAwareNodeManager;
 import io.trino.metadata.InMemoryNodeManager;
+import io.trino.operator.FlatHashStrategyCompiler;
 import io.trino.operator.GroupByHashPageIndexerFactory;
 import io.trino.operator.PagesIndex;
 import io.trino.operator.PagesIndexPageSorter;
@@ -23,15 +26,15 @@ import io.trino.spi.NodeManager;
 import io.trino.spi.PageIndexerFactory;
 import io.trino.spi.PageSorter;
 import io.trino.spi.VersionEmbedder;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorContext;
 import io.trino.spi.connector.MetadataProvider;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeOperators;
-import io.trino.sql.gen.JoinCompiler;
-import io.trino.type.BlockTypeOperators;
-import io.trino.version.EmbedVersion;
+import io.trino.util.EmbedVersion;
 
 import static io.trino.spi.connector.MetadataProvider.NOOP_METADATA_PROVIDER;
+import static io.trino.testing.TestingHandles.TEST_CATALOG_HANDLE;
 import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
 
 public final class TestingConnectorContext
@@ -44,12 +47,26 @@ public final class TestingConnectorContext
 
     public TestingConnectorContext()
     {
-        TypeOperators typeOperators = new TypeOperators();
-        pageIndexerFactory = new GroupByHashPageIndexerFactory(new JoinCompiler(typeOperators), new BlockTypeOperators(typeOperators));
-        CatalogName catalogName = new CatalogName("test");
-        InMemoryNodeManager inMemoryNodeManager = new InMemoryNodeManager();
-        inMemoryNodeManager.addCurrentNodeConnector(catalogName);
-        nodeManager = new ConnectorAwareNodeManager(inMemoryNodeManager, "testenv", catalogName, true);
+        pageIndexerFactory = new GroupByHashPageIndexerFactory(new FlatHashStrategyCompiler(new TypeOperators()));
+        nodeManager = new ConnectorAwareNodeManager(new InMemoryNodeManager(), "testenv", TEST_CATALOG_HANDLE, true);
+    }
+
+    @Override
+    public CatalogHandle getCatalogHandle()
+    {
+        return TEST_CATALOG_HANDLE;
+    }
+
+    @Override
+    public OpenTelemetry getOpenTelemetry()
+    {
+        return OpenTelemetry.noop();
+    }
+
+    @Override
+    public Tracer getTracer()
+    {
+        return Tracing.noopTracer();
     }
 
     @Override
@@ -86,11 +103,5 @@ public final class TestingConnectorContext
     public PageIndexerFactory getPageIndexerFactory()
     {
         return pageIndexerFactory;
-    }
-
-    @Override
-    public ClassLoader duplicatePluginClassLoader()
-    {
-        return getClass().getClassLoader();
     }
 }

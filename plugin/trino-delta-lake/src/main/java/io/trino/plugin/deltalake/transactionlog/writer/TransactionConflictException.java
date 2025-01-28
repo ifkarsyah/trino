@@ -13,11 +13,24 @@
  */
 package io.trino.plugin.deltalake.transactionlog.writer;
 
+/**
+ * Exception thrown to point out that another process has already created
+ * a namesake transaction log file as the one being written to commit the
+ * current transaction.
+ * <p>
+ * This kind of exception is potentially recoverable with a commit retry
+ * mechanism.
+ */
 public class TransactionConflictException
         extends RuntimeException
 {
     public TransactionConflictException(String message)
     {
         super(message);
+    }
+
+    public TransactionConflictException(String message, Throwable cause)
+    {
+        super(message, cause);
     }
 }

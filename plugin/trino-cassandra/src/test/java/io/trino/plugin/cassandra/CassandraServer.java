@@ -18,103 +18,97 @@ import com.datastax.oss.driver.api.core.CqlSessionBuilder;
 import com.datastax.oss.driver.api.core.ProtocolVersion;
 import com.datastax.oss.driver.api.core.config.DriverConfigLoader;
 import com.datastax.oss.driver.api.core.config.ProgrammaticDriverConfigLoaderBuilder;
-import com.datastax.oss.driver.api.core.cql.ResultSet;
-import com.datastax.oss.driver.api.core.cql.Row;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Resources;
 import io.airlift.json.JsonCodec;
 import io.airlift.log.Logger;
 import io.airlift.units.Duration;
-import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.cassandra.CassandraContainer;
+import org.testcontainers.containers.wait.CassandraQueryWaitStrategy;
+import org.testcontainers.utility.DockerImageName;
 
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeoutException;
 
 import static com.datastax.oss.driver.api.core.config.DefaultDriverOption.CONTROL_CONNECTION_AGREEMENT_TIMEOUT;
 import static com.datastax.oss.driver.api.core.config.DefaultDriverOption.METADATA_SCHEMA_REFRESHED_KEYSPACES;
 import static com.datastax.oss.driver.api.core.config.DefaultDriverOption.PROTOCOL_VERSION;
 import static com.datastax.oss.driver.api.core.config.DefaultDriverOption.REQUEST_TIMEOUT;
-import static com.google.common.io.Files.write;
 import static com.google.common.io.Resources.getResource;
 import static io.trino.plugin.cassandra.CassandraTestingUtils.CASSANDRA_TYPE_MANAGER;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.nio.file.Files.createDirectory;
 import static java.nio.file.Files.createTempDirectory;
-import static java.util.Objects.requireNonNull;
+import static java.nio.file.Files.writeString;
 import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.testcontainers.utility.MountableFile.forHostPath;
-import static org.testng.Assert.assertEquals;
 
 public class CassandraServer
         implements Closeable
 {
-    private static Logger log = Logger.get(CassandraServer.class);
-
-    private static final int PORT = 9142;
-
+    private static final Logger log = Logger.get(CassandraServer.class);
     private static final Duration REFRESH_SIZE_ESTIMATES_TIMEOUT = new Duration(1, MINUTES);
 
-    private final GenericContainer<?> dockerContainer;
+    private final CassandraContainer dockerContainer;
     private final CassandraSession session;
 
     public CassandraServer()
             throws Exception
     {
-        this("2.2");
+        this("cassandra:3.0", "cu-cassandra.yaml");
     }
 
-    public CassandraServer(String cassandraVersion)
+    public CassandraServer(String imageName, String configFileName)
             throws Exception
     {
-        log.info("Starting cassandra...");
+        this(DockerImageName.parse(imageName), ImmutableMap.of(), "/etc/cassandra/cassandra.yaml", configFileName);
+    }
 
-        this.dockerContainer = new GenericContainer<>("cassandra:" + cassandraVersion)
-                .withExposedPorts(PORT)
-                .withCopyFileToContainer(forHostPath(prepareCassandraYaml()), "/etc/cassandra/cassandra.yaml");
+    @SuppressWarnings("deprecation")
+    public CassandraServer(DockerImageName imageName, Map<String, String> environmentVariables, String configPath, String configFileName)
+            throws Exception
+    {
+        log.debug("Starting cassandra...");
+
+        this.dockerContainer = new CassandraContainer(imageName)
+                .withCopyFileToContainer(forHostPath(prepareCassandraYaml(configFileName)), configPath)
+                .withEnv(environmentVariables)
+                .withStartupTimeout(java.time.Duration.ofMinutes(10))
+                // TODO: https://github.com/testcontainers/testcontainers-java/issues/9337
+                .waitingFor(new CassandraQueryWaitStrategy());
         this.dockerContainer.start();
 
         ProgrammaticDriverConfigLoaderBuilder driverConfigLoaderBuilder = DriverConfigLoader.programmaticBuilder();
-        driverConfigLoaderBuilder.withDuration(REQUEST_TIMEOUT, java.time.Duration.ofSeconds(12));
+        driverConfigLoaderBuilder.withDuration(REQUEST_TIMEOUT, java.time.Duration.ofSeconds(30));
         driverConfigLoaderBuilder.withString(PROTOCOL_VERSION, ProtocolVersion.V3.name());
         driverConfigLoaderBuilder.withDuration(CONTROL_CONNECTION_AGREEMENT_TIMEOUT, java.time.Duration.ofSeconds(30));
         // allow the retrieval of metadata for the system keyspaces
         driverConfigLoaderBuilder.withStringList(METADATA_SCHEMA_REFRESHED_KEYSPACES, List.of());
 
         CqlSessionBuilder cqlSessionBuilder = CqlSession.builder()
-                .withApplicationName("TestCluster")
-                .addContactPoint(new InetSocketAddress(this.dockerContainer.getContainerIpAddress(), this.dockerContainer.getMappedPort(PORT)))
-                .withLocalDatacenter("datacenter1")
+                .addContactPoint(dockerContainer.getContactPoint())
+                .withLocalDatacenter(dockerContainer.getLocalDatacenter())
                 .withConfigLoader(driverConfigLoaderBuilder.build());
 
-        CassandraSession session = new CassandraSession(
+        session = new CassandraSession(
                 CASSANDRA_TYPE_MANAGER,
                 JsonCodec.listJsonCodec(ExtraColumnMetadata.class),
                 cqlSessionBuilder::build,
                 new Duration(1, MINUTES));
-
-        try {
-            checkConnectivity(session);
-        }
-        catch (RuntimeException e) {
-            session.close();
-            this.dockerContainer.stop();
-            throw e;
-        }
-
-        this.session = session;
     }
 
-    private static String prepareCassandraYaml()
+    private static String prepareCassandraYaml(String fileName)
             throws IOException
     {
-        String original = Resources.toString(getResource("cu-cassandra.yaml"), UTF_8);
+        String original = Resources.toString(getResource(fileName), UTF_8);
 
         Path tmpDirPath = createTempDirectory(null);
         Path dataDir = tmpDirPath.resolve("data");
@@ -122,35 +116,26 @@ public class CassandraServer
 
         String modified = original.replaceAll("\\$\\{data_directory\\}", dataDir.toAbsolutePath().toString());
 
-        File yamlFile = tmpDirPath.resolve("cu-cassandra.yaml").toFile();
+        File yamlFile = tmpDirPath.resolve(fileName).toFile();
         yamlFile.deleteOnExit();
-        write(modified, yamlFile, UTF_8);
+        writeString(yamlFile.toPath(), modified, UTF_8);
 
         return yamlFile.getAbsolutePath();
     }
 
     public CassandraSession getSession()
     {
-        return requireNonNull(session, "session is null");
+        return session;
     }
 
     public String getHost()
     {
-        return dockerContainer.getContainerIpAddress();
+        return dockerContainer.getHost();
     }
 
     public int getPort()
     {
-        return dockerContainer.getMappedPort(PORT);
-    }
-
-    private static void checkConnectivity(CassandraSession session)
-    {
-        ResultSet result = session.execute("SELECT release_version FROM system.local");
-        List<Row> rows = result.all();
-        assertEquals(rows.size(), 1);
-        String version = rows.get(0).getString(0);
-        log.info("Cassandra version: %s", version);
+        return dockerContainer.getContactPoint().getPort();
     }
 
     public void refreshSizeEstimates(String keyspace, String table)
@@ -162,10 +147,10 @@ public class CassandraServer
             refreshSizeEstimates();
             List<SizeEstimate> sizeEstimates = getSession().getSizeEstimates(keyspace, table);
             if (!sizeEstimates.isEmpty()) {
-                log.info("Size estimates for the table %s.%s have been refreshed successfully: %s", keyspace, table, sizeEstimates);
+                log.debug("Size estimates for the table %s.%s have been refreshed successfully: %s", keyspace, table, sizeEstimates);
                 return;
             }
-            log.info("Size estimates haven't been refreshed as expected. Retrying ...");
+            log.debug("Size estimates haven't been refreshed as expected. Retrying ...");
             SECONDS.sleep(1);
         }
         throw new TimeoutException(format("Attempting to refresh size estimates for table %s.%s has timed out after %s", keyspace, table, REFRESH_SIZE_ESTIMATES_TIMEOUT));
@@ -186,9 +171,7 @@ public class CassandraServer
     @Override
     public void close()
     {
-        if (session != null) {
-            session.close();
-        }
+        session.close();
         dockerContainer.close();
     }
 }

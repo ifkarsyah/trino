@@ -13,7 +13,8 @@
  */
 package io.trino.connector;
 
-import javax.validation.constraints.NotNull;
+import io.trino.spi.connector.CatalogHandle;
+import jakarta.validation.constraints.NotNull;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
@@ -31,14 +32,14 @@ public interface CatalogServiceProvider<T>
         };
     }
 
-    static <T> CatalogServiceProvider<T> singleton(CatalogName name, T value)
+    static <T> CatalogServiceProvider<T> singleton(CatalogHandle catalogHandle, T value)
     {
-        return catalogName -> {
-            checkArgument(catalogName.equals(name));
+        return handle -> {
+            checkArgument(handle.equals(catalogHandle));
             return value;
         };
     }
 
     @NotNull
-    T getService(CatalogName catalogName);
+    T getService(CatalogHandle catalogHandle);
 }

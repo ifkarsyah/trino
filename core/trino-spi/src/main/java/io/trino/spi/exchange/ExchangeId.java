@@ -19,11 +19,15 @@ import com.fasterxml.jackson.annotation.JsonValue;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
+import static io.airlift.slice.SizeOf.estimatedSizeOf;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static java.util.Objects.requireNonNull;
 import static java.util.UUID.randomUUID;
 
 public class ExchangeId
 {
+    private static final long INSTANCE_SIZE = instanceSize(ExchangeId.class);
+
     private static final Pattern ID_PATTERN = Pattern.compile("[a-zA-Z0-9_-]+");
 
     private final String id;
@@ -72,5 +76,10 @@ public class ExchangeId
     public String toString()
     {
         return id;
+    }
+
+    public long getRetainedSizeInBytes()
+    {
+        return INSTANCE_SIZE + estimatedSizeOf(id);
     }
 }

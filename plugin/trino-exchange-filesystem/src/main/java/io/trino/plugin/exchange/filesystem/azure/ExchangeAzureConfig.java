@@ -19,8 +19,8 @@ import io.airlift.configuration.ConfigSecuritySensitive;
 import io.airlift.units.DataSize;
 import io.airlift.units.MaxDataSize;
 import io.airlift.units.MinDataSize;
-
-import javax.validation.constraints.NotNull;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 
 import java.util.Optional;
 
@@ -29,11 +29,18 @@ import static io.airlift.units.DataSize.Unit.MEGABYTE;
 public class ExchangeAzureConfig
 {
     private Optional<String> azureStorageConnectionString = Optional.empty();
+    private Optional<String> azureStorageEndpoint = Optional.empty();
     private DataSize azureStorageBlockSize = DataSize.of(4, MEGABYTE);
+    private int maxErrorRetries = 10;
 
     public Optional<String> getAzureStorageConnectionString()
     {
         return azureStorageConnectionString;
+    }
+
+    public Optional<String> getAzureStorageEndpoint()
+    {
+        return azureStorageEndpoint;
     }
 
     @Config("exchange.azure.connection-string")
@@ -41,6 +48,14 @@ public class ExchangeAzureConfig
     public ExchangeAzureConfig setAzureStorageConnectionString(String azureStorageConnectionString)
     {
         this.azureStorageConnectionString = Optional.ofNullable(azureStorageConnectionString);
+        return this;
+    }
+
+    @Config("exchange.azure.endpoint")
+    @ConfigSecuritySensitive
+    public ExchangeAzureConfig setAzureStorageEndpoint(String azureStorageEndpoint)
+    {
+        this.azureStorageEndpoint = Optional.ofNullable(azureStorageEndpoint);
         return this;
     }
 
@@ -57,6 +72,19 @@ public class ExchangeAzureConfig
     public ExchangeAzureConfig setAzureStorageBlockSize(DataSize azureStorageBlockSize)
     {
         this.azureStorageBlockSize = azureStorageBlockSize;
+        return this;
+    }
+
+    @Min(0)
+    public int getMaxErrorRetries()
+    {
+        return maxErrorRetries;
+    }
+
+    @Config("exchange.azure.max-error-retries")
+    public ExchangeAzureConfig setMaxErrorRetries(int maxErrorRetries)
+    {
+        this.maxErrorRetries = maxErrorRetries;
         return this;
     }
 }

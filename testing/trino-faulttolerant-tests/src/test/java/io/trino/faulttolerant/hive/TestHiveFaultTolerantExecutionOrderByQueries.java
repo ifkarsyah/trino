@@ -13,29 +13,38 @@
  */
 package io.trino.faulttolerant.hive;
 
+import com.google.common.collect.ImmutableSet;
 import io.trino.plugin.exchange.filesystem.FileSystemExchangePlugin;
 import io.trino.plugin.exchange.filesystem.containers.MinioStorage;
 import io.trino.plugin.hive.HiveQueryRunner;
 import io.trino.testing.AbstractTestFaultTolerantExecutionOrderByQueries;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.AfterClass;
+import io.trino.tpch.TpchTable;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static io.trino.plugin.exchange.filesystem.containers.MinioStorage.getExchangeManagerProperties;
-import static io.trino.testing.sql.TestTable.randomTableSuffix;
-import static io.trino.tpch.TpchTable.getTables;
+import static io.trino.testing.TestingNames.randomNameSuffix;
+import static io.trino.tpch.TpchTable.LINE_ITEM;
 
 public class TestHiveFaultTolerantExecutionOrderByQueries
         extends AbstractTestFaultTolerantExecutionOrderByQueries
 {
+    protected static final List<TpchTable<?>> REQUIRED_TPCH_TABLES = ImmutableSet.<TpchTable<?>>builder()
+            .addAll(AbstractTestFaultTolerantExecutionOrderByQueries.REQUIRED_TPCH_TABLES)
+            .add(LINE_ITEM)
+            .build().asList();
+
     private MinioStorage minioStorage;
 
     @Override
     protected QueryRunner createQueryRunner(Map<String, String> extraProperties)
             throws Exception
     {
-        this.minioStorage = new MinioStorage("test-exchange-spooling-" + randomTableSuffix());
+        this.minioStorage = new MinioStorage("test-exchange-spooling-" + randomNameSuffix());
         minioStorage.start();
 
         return HiveQueryRunner.builder()
@@ -44,11 +53,11 @@ public class TestHiveFaultTolerantExecutionOrderByQueries
                     runner.installPlugin(new FileSystemExchangePlugin());
                     runner.loadExchangeManager("filesystem", getExchangeManagerProperties(minioStorage));
                 })
-                .setInitialTables(getTables())
+                .setInitialTables(REQUIRED_TPCH_TABLES)
                 .build();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void destroy()
             throws Exception
     {
@@ -56,5 +65,21 @@ public class TestHiveFaultTolerantExecutionOrderByQueries
             minioStorage.close();
             minioStorage = null;
         }
+    }
+
+    @Test
+    public void testLargeOrderBy()
+    {
+        // The file system exchange can break ordering only when a single writer generates more than a single file for a single output partition.
+        // Order large dataset to cross the exchange.sink-max-file-size boundary and generate more than a single file.
+        assertQueryOrdered("" +
+                "SELECT " +
+                "   *, " +
+                "   comment || comment c0, " +
+                "   comment || comment || comment c1, " +
+                "   comment || comment || comment || comment c2, " +
+                "   comment || comment || comment || comment c3, " +
+                "   comment || comment || comment || comment c4 " +
+                " FROM lineitem ORDER BY orderkey, suppkey, linenumber");
     }
 }

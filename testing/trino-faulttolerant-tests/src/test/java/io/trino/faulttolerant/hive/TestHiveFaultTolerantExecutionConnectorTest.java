@@ -13,20 +13,28 @@
  */
 package io.trino.faulttolerant.hive;
 
+import io.airlift.units.DataSize;
 import io.trino.Session;
 import io.trino.plugin.exchange.filesystem.FileSystemExchangePlugin;
 import io.trino.plugin.exchange.filesystem.containers.MinioStorage;
 import io.trino.plugin.hive.BaseHiveConnectorTest;
+import io.trino.plugin.hive.HiveQueryRunner;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Isolated;
 
-import static io.trino.SystemSessionProperties.FAULT_TOLERANT_EXECUTION_PARTITION_COUNT;
+import static io.airlift.units.DataSize.Unit.GIGABYTE;
+import static io.trino.SystemSessionProperties.FAULT_TOLERANT_EXECUTION_MAX_PARTITION_COUNT;
+import static io.trino.SystemSessionProperties.FAULT_TOLERANT_EXECUTION_MIN_PARTITION_COUNT;
 import static io.trino.plugin.exchange.filesystem.containers.MinioStorage.getExchangeManagerProperties;
 import static io.trino.testing.FaultTolerantExecutionConnectorTestHelper.getExtraProperties;
-import static io.trino.testing.sql.TestTable.randomTableSuffix;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static io.trino.testing.TestingNames.randomNameSuffix;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@Isolated
+@TestInstance(PER_CLASS)
 public class TestHiveFaultTolerantExecutionConnectorTest
         extends BaseHiveConnectorTest
 {
@@ -36,73 +44,74 @@ public class TestHiveFaultTolerantExecutionConnectorTest
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        this.minioStorage = new MinioStorage("test-exchange-spooling-" + randomTableSuffix());
+        this.minioStorage = new MinioStorage("test-exchange-spooling-" + randomNameSuffix());
         minioStorage.start();
 
-        return BaseHiveConnectorTest.createHiveQueryRunner(
-                getExtraProperties(),
-                runner -> {
+        return createHiveQueryRunner(HiveQueryRunner.builder()
+                .setExtraProperties(getExtraProperties())
+                .setAdditionalSetup(runner -> {
                     runner.installPlugin(new FileSystemExchangePlugin());
                     runner.loadExchangeManager("filesystem", getExchangeManagerProperties(minioStorage));
-                });
+                }));
     }
 
+    @Test
     @Override
-    public void testScaleWriters()
+    public void testMultipleWriters()
     {
-        testWithAllStorageFormats(this::testSingleWriter);
+        // Not applicable for fault-tolerant mode.
     }
 
+    @Test
     @Override
-    public void testTargetMaxFileSize()
+    public void testMultipleWritersWithSkewedData()
     {
-        testTargetMaxFileSize(9);
+        // Not applicable for fault-tolerant mode.
     }
 
+    // We need to override this method because in the case of pipeline execution,
+    // the default number of writers are equal to worker count. Whereas, in the
+    // fault-tolerant execution, it starts with 1.
+    @Test
     @Override
-    public void testTargetMaxFileSizePartitioned()
+    public void testTaskWritersDoesNotScaleWithLargeMinWriterSize()
     {
-        testTargetMaxFileSizePartitioned(9);
+        testTaskScaleWriters(getSession(), DataSize.of(2, GIGABYTE), 4, DataSize.of(64, GIGABYTE))
+                .isEqualTo(1);
     }
 
+    @Test
     @Override
-    public void testOptimize()
+    public void testWriterTaskCountLimitUnpartitioned()
     {
-        assertThatThrownBy(super::testOptimize)
-                .hasMessageContaining("OPTIMIZE procedure is not supported with query retries enabled");
+        // Not applicable for fault-tolerant mode.
     }
 
+    @Test
     @Override
-    public void testOptimizeWithWriterScaling()
+    public void testWriterTaskCountLimitPartitionedScaleWritersDisabled()
     {
-        assertThatThrownBy(super::testOptimizeWithWriterScaling)
-                .hasMessageContaining("OPTIMIZE procedure is not supported with query retries enabled");
+        // Not applicable for fault-tolerant mode.
     }
 
+    @Test
     @Override
-    public void testOptimizeWithPartitioning()
+    public void testWriterTaskCountLimitPartitionedScaleWritersEnabled()
     {
-        assertThatThrownBy(super::testOptimizeWithPartitioning)
-                .hasMessageContaining("OPTIMIZE procedure is not supported with query retries enabled");
-    }
-
-    @Override
-    public void testOptimizeWithBucketing()
-    {
-        assertThatThrownBy(super::testOptimizeWithBucketing)
-                .hasMessageContaining("OPTIMIZE procedure is not supported with query retries enabled");
+        // Not applicable for fault-tolerant mode.
     }
 
     @Test
     public void testMaxOutputPartitionCountCheck()
     {
         Session session = Session.builder(getSession())
-                .setSystemProperty(FAULT_TOLERANT_EXECUTION_PARTITION_COUNT, "51")
+                .setSystemProperty(FAULT_TOLERANT_EXECUTION_MAX_PARTITION_COUNT, "51")
+                .setSystemProperty(FAULT_TOLERANT_EXECUTION_MIN_PARTITION_COUNT, "51")
                 .build();
         assertQueryFails(session, "SELECT nationkey, count(*) FROM nation GROUP BY nationkey", "Max number of output partitions exceeded for exchange.*");
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void destroy()
             throws Exception
     {

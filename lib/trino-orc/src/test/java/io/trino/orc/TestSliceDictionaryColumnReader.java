@@ -20,15 +20,15 @@ import io.trino.orc.metadata.Footer;
 import io.trino.orc.metadata.OrcMetadataReader;
 import io.trino.orc.metadata.StripeInformation;
 import io.trino.orc.reader.SliceDictionaryColumnReader;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Random;
 
-import static com.google.common.io.Files.createTempDir;
 import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static io.trino.orc.OrcTester.writeOrcColumnTrino;
 import static io.trino.orc.metadata.CompressionKind.NONE;
@@ -37,8 +37,7 @@ import static io.trino.spi.type.VarcharType.VARCHAR;
 import static java.nio.file.Files.readAllBytes;
 import static java.time.ZoneOffset.UTC;
 import static java.util.UUID.randomUUID;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestSliceDictionaryColumnReader
 {
@@ -52,7 +51,7 @@ public class TestSliceDictionaryColumnReader
     {
         // create orc file
         List<String> values = createValues();
-        File temporaryDirectory = createTempDir();
+        File temporaryDirectory = Files.createTempDirectory(null).toFile();
         File orcFile = new File(temporaryDirectory, randomUUID().toString());
         writeOrcColumnTrino(orcFile, NONE, VARCHAR, values.iterator(), new OrcWriterStats());
 
@@ -62,7 +61,7 @@ public class TestSliceDictionaryColumnReader
                 .orElseThrow(() -> new RuntimeException("File is empty"));
         Footer footer = orcReader.getFooter();
         List<OrcColumn> columns = orcReader.getRootColumn().getNestedColumns();
-        assertTrue(columns.size() == 1);
+        assertThat(columns).hasSize(1);
         StripeReader stripeReader = new StripeReader(
                 dataSource,
                 UTC,
@@ -72,7 +71,7 @@ public class TestSliceDictionaryColumnReader
                 footer.getRowsInRowGroup(),
                 OrcPredicate.TRUE,
                 ORIGINAL,
-                new OrcMetadataReader(),
+                new OrcMetadataReader(new OrcReaderOptions()),
                 Optional.empty());
         AggregatedMemoryContext memoryContext = newSimpleAggregatedMemoryContext();
         SliceDictionaryColumnReader columnReader = new SliceDictionaryColumnReader(columns.get(0), memoryContext.newLocalMemoryContext(TestSliceDictionaryColumnReader.class.getSimpleName()), -1, false);
@@ -88,12 +87,12 @@ public class TestSliceDictionaryColumnReader
                 columnReader.prepareNextRead(1000);
                 columnReader.readBlock();
                 // memory usage check
-                assertEquals(memoryContext.getBytes(), columnReader.getRetainedSizeInBytes());
+                assertThat(memoryContext.getBytes()).isEqualTo(columnReader.getRetainedSizeInBytes());
             }
         }
 
         columnReader.close();
-        assertTrue(memoryContext.getBytes() == 0);
+        assertThat(memoryContext.getBytes()).isZero();
     }
 
     private List<String> createValues()

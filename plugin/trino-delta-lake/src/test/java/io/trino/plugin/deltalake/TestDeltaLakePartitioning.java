@@ -15,14 +15,16 @@ package io.trino.plugin.deltalake;
 
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.createDeltaLakeQueryRunner;
-import static io.trino.testing.sql.TestTable.randomTableSuffix;
+import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public class TestDeltaLakePartitioning
         extends AbstractTestQueryFramework
 {
@@ -30,14 +32,16 @@ public class TestDeltaLakePartitioning
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createDeltaLakeQueryRunner(DELTA_CATALOG);
+        return DeltaLakeQueryRunner.builder()
+                .addDeltaProperty("delta.register-table-procedure.enabled", "true")
+                .build();
     }
 
-    @BeforeClass
+    @BeforeAll
     public void registerTables()
     {
         String dataPath = getClass().getClassLoader().getResource("deltalake/partitions").toExternalForm();
-        getQueryRunner().execute(format("CREATE TABLE partitions (t_string VARCHAR) WITH (location = '%s')", dataPath));
+        getQueryRunner().execute(format("CALL system.register_table(CURRENT_SCHEMA, 'partitions', '%s')", dataPath));
     }
 
     @Test
@@ -136,17 +140,45 @@ public class TestDeltaLakePartitioning
     }
 
     @Test
-    public void testPartitionsSystemTableDoesNotExist()
+    public void testReadAllTypesPartitionsSystemTable()
     {
-        assertQueryFails(
-                "SELECT * FROM \"partitions$partitions\"",
-                ".*'delta_lake\\.tpch\\.partitions\\$partitions' does not exist");
+        assertThat(
+                query("SELECT " +
+                        "partition.p_string, " +
+                        "partition.p_byte, " +
+                        "partition.p_short, " +
+                        "partition.p_int, " +
+                        "partition.p_long, " +
+                        "partition.p_decimal, " +
+                        "partition.p_boolean, " +
+                        "partition.p_float, " +
+                        "partition.p_double, " +
+                        "partition.p_date, " +
+                        "partition.p_timestamp, " +
+                        "file_count, " +
+                        "total_size " +
+                        "FROM \"partitions$partitions\" "))
+                .matches("VALUES (" +
+                        "VARCHAR 'Alice', " +
+                        "TINYINT '123', " +
+                        "SMALLINT '12345', " +
+                        "123456789, " +
+                        "1234567890123456789, " +
+                        "12345678901234567890.123456789012345678, " +
+                        "true, " +
+                        "REAL '3.1415927', " +
+                        "DOUBLE '3.141592653589793', " +
+                        "DATE '2014-01-01', " +
+                        "TIMESTAMP '2014-01-01 23:00:01.123 UTC', " +
+                        "BIGINT '30', " +
+                        "BIGINT '136080' " +
+                        ")");
     }
 
     @Test
     public void testPartitioningWithSpecialCharactersInPartitionColumn()
     {
-        String dataPath = getClass().getClassLoader().getResource("deltalake").toExternalForm() + "/special_char" + randomTableSuffix();
+        String dataPath = getClass().getClassLoader().getResource("deltalake").toExternalForm() + "/special_char" + randomNameSuffix();
         assertUpdate(
                 "CREATE TABLE special_chars (id, col_name) " +
                         "WITH(partitioned_by = ARRAY['col_name'], " +
